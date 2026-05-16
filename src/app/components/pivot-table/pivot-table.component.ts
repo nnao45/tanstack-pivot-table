@@ -16,6 +16,7 @@ import {
   ColumnDef,
   createColumnHelper,
   ExpandedState,
+  Header,
   Row,
   SortingState,
   ColumnSizingState,
@@ -45,6 +46,7 @@ const VALUE_COL_SIZE = 90;
         <table class="border-collapse text-xs" style="width: max-content; min-width: 100%">
           <thead>
             @for (headerGroup of table.getHeaderGroups(); track headerGroup.id) {
+              @if (!isHeaderGroupAllEmpty(headerGroup.headers)) {
               <tr>
                 @for (header of headerGroup.headers; track header.id) {
                   @let expandNode = getExpandableNode(header.column.id);
@@ -78,8 +80,21 @@ const VALUE_COL_SIZE = 90;
                             {{ value }}
                           </ng-container>
                         </span>
-                        <!-- Sort icon (leaf data columns only) -->
-                        @if (header.column.getCanSort()) {
+                        <!-- Sort icon on group header (collapsed single-value expandable columns) -->
+                        @if (sortableGroupMap().has(header.column.id)) {
+                          <span
+                            (click)="$event.stopPropagation(); toggleGroupLeafSort(header.column.id, $event)"
+                            class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
+                          >
+                            @switch (getGroupLeafSort(header.column.id)) {
+                              @case ('asc')  { <span>▲</span> }
+                              @case ('desc') { <span>▼</span> }
+                              @default       { <span>⇅</span> }
+                            }
+                          </span>
+                        }
+                        <!-- Sort icon (leaf data columns, skip hidden sub-cols of collapsed groups) -->
+                        @if (header.column.getCanSort() && !sortableLeafSet().has(header.column.id)) {
                           <span
                             (click)="$event.stopPropagation(); header.column.getToggleSortingHandler()?.($event)"
                             class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
@@ -108,6 +123,7 @@ const VALUE_COL_SIZE = 90;
                   </th>
                 }
               </tr>
+              }
             }
           </thead>
           <tbody>
@@ -202,6 +218,28 @@ export class PivotTableComponent {
     traverse(this.pivotData().columnNodes);
     return map;
   });
+
+  // For single-value-field collapsed expandable nodes: group colId → leaf colId
+  sortableGroupMap = computed<Map<string, string>>(() => {
+    const cfg = this.config();
+    if (cfg.valueFields.length !== 1) return new Map();
+    const vf = cfg.valueFields[0];
+    const expanded = this.columnExpanded();
+    const map = new Map<string, string>();
+    const traverse = (nodes: ColumnNode[]) => {
+      for (const node of nodes) {
+        if (node.children.length > 0 && !expanded.has(node.key)) {
+          map.set(`colGroup__${node.key}`, makeCellKey(node.key, vf.fieldId, vf.aggFn));
+        }
+        traverse(node.children);
+      }
+    };
+    traverse(this.pivotData().columnNodes);
+    return map;
+  });
+
+  // Leaf IDs that are hidden sub-cols of collapsed groups (sort icon suppressed here)
+  sortableLeafSet = computed<Set<string>>(() => new Set(this.sortableGroupMap().values()));
 
   columns = computed<ColumnDef<PivotRow>[]>(() => {
     const cfg = this.config();
@@ -301,13 +339,23 @@ export class PivotTableComponent {
 
     // Expanded
     const subCols: ColumnDef<PivotRow>[] = node.children.flatMap(child => this.generateColsFromNode(child));
+    // When children themselves have children, they render as groups (depth +1).
+    // Wrap Subtotal in a group too so it appears in the same header row as siblings,
+    // and its empty sub-col gets hidden by isHeaderGroupAllEmpty.
+    const childrenHaveChildren = node.children.some(c => c.children.length > 0);
     if (cfg.valueFields.length === 1) {
       const vf = cfg.valueFields[0];
-      subCols.push(this.makeValueAccessor(
-        `subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`,
-        (row) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
-        'Subtotal', false
-      ));
+      const subtotalId = `subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`;
+      const accessorFn = (row: PivotRow) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)];
+      if (childrenHaveChildren) {
+        subCols.push(columnHelper.group({
+          id: `subtotalGroup__${node.key}`,
+          header: 'Subtotal',
+          columns: [this.makeValueAccessor(subtotalId, accessorFn, '', false)],
+        }) as ColumnDef<PivotRow>);
+      } else {
+        subCols.push(this.makeValueAccessor(subtotalId, accessorFn, 'Subtotal', false));
+      }
     } else {
       subCols.push(columnHelper.group({
         id: `subtotalGroup__${node.key}`,
@@ -392,8 +440,27 @@ export class PivotTableComponent {
     return this.table.getColumn(colId)?.getIsPinned() === 'left';
   }
 
+  isHeaderGroupAllEmpty(headers: Header<PivotRow, unknown>[]): boolean {
+    return headers.every(h =>
+      h.isPlaceholder ||
+      (typeof h.column.columnDef.header === 'string' && h.column.columnDef.header === '')
+    );
+  }
+
   getExpandableNode(colId: string): ColumnNode | null {
     return this.nodeMap().get(colId) ?? null;
+  }
+
+  getGroupLeafSort(groupId: string): false | 'asc' | 'desc' {
+    const leafId = this.sortableGroupMap().get(groupId);
+    if (!leafId) return false;
+    return this.table.getColumn(leafId)?.getIsSorted() ?? false;
+  }
+
+  toggleGroupLeafSort(groupId: string, event: MouseEvent) {
+    const leafId = this.sortableGroupMap().get(groupId);
+    if (!leafId) return;
+    this.table.getColumn(leafId)?.getToggleSortingHandler()?.(event);
   }
 
   toggleColExpand(nodeKey: string) {
