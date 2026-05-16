@@ -92,6 +92,10 @@ export class PivotDataService {
       return { rows: [], columnNodes: [], grandTotal: emptyRow('Grand Total', -1), childrenMap: new Map() };
     }
 
+    if (valueFields.length === 1 && valueFields[0].aggFn === 'sum') {
+      return computeSingleSum(rawData, rowFields, columnFields, valueFields[0].fieldId);
+    }
+
     // Step 1: build aggregate buckets and the column tree in a single raw-data pass.
     const measurePlan = buildMeasurePlan(valueFields);
     const cellBuckets = new Map<string, Map<string, BucketStats>>();
@@ -212,6 +216,115 @@ export class PivotDataService {
 
     return { rows: rootRows, columnNodes, grandTotal, childrenMap };
   }
+}
+
+function computeSingleSum(
+  rawData: SaleRecord[],
+  rowFields: string[],
+  columnFields: string[],
+  fieldId: string
+): PivotDataResult {
+  const measureKey = fieldId as keyof SaleRecord;
+  const cellBuckets = new Map<string, Map<string, number>>();
+  const rowTotalBuckets = new Map<string, number>();
+  const colBuckets = new Map<string, number>();
+  const rowEntries = new Map<string, RowEntry>();
+  const columnRoots: MutableColumnNode[] = [];
+  const columnRootMap = new Map<string, MutableColumnNode>();
+  let grandTotalValue = 0;
+
+  for (const record of rawData) {
+    const value = Number(record[measureKey]);
+    grandTotalValue += value;
+
+    const rowValues = rowFields.map(field => String(record[field as keyof SaleRecord]));
+    const rowKeys = buildNestedKeys(rowValues);
+    const colKeys = columnFields.length === 0 ? TOTAL_KEYS : buildColumnKeys(record, columnFields, columnRoots, columnRootMap);
+
+    for (let rowDepth = 1; rowDepth <= rowFields.length; rowDepth++) {
+      const rowKey = rowKeys[rowDepth - 1];
+      if (!rowEntries.has(rowKey)) {
+        rowEntries.set(rowKey, {
+          parts: rowValues.slice(0, rowDepth),
+          parentKey: rowDepth > 1 ? rowKeys[rowDepth - 2] : '',
+        });
+      }
+
+      rowTotalBuckets.set(rowKey, (rowTotalBuckets.get(rowKey) ?? 0) + value);
+
+      let rowBuckets = cellBuckets.get(rowKey);
+      if (!rowBuckets) {
+        rowBuckets = new Map<string, number>();
+        cellBuckets.set(rowKey, rowBuckets);
+      }
+      for (const colKey of colKeys) {
+        rowBuckets.set(colKey, (rowBuckets.get(colKey) ?? 0) + value);
+      }
+    }
+
+    for (const colKey of colKeys) {
+      colBuckets.set(colKey, (colBuckets.get(colKey) ?? 0) + value);
+    }
+  }
+
+  const aggFn: AggFnName = 'sum';
+  const columnNodes = columnFields.length > 0
+    ? finalizeColumnNodes(columnRoots)
+    : [{ value: 'Total', field: '', key: TOTAL_KEY, depth: 0, children: [] } as ColumnNode];
+  const allColKeys = collectAllColKeys(columnNodes);
+  const cellWritePlans = allColKeys.map(colKey => ({
+    colKey,
+    key: makeCellKey(colKey, fieldId, aggFn),
+  }));
+  const rowTotalKey = makeRowTotalKey(fieldId, aggFn);
+
+  const allRowEntries = [...rowEntries.entries()];
+  allRowEntries.sort((a, b) => {
+    const da = a[1].parts.length;
+    const db = b[1].parts.length;
+    if (da !== db) return da - db;
+    return a[0].localeCompare(b[0]);
+  });
+
+  const rootRows: PivotRow[] = [];
+  const childrenMap = new Map<string, PivotRow[]>();
+  for (const [rowKey, { parts, parentKey }] of allRowEntries) {
+    const depth = parts.length - 1;
+    const row: PivotRow = {
+      __rowKeys: parts,
+      __key: rowKey,
+      __depth: depth,
+      __isGroup: depth < rowFields.length - 1,
+      __label: parts[parts.length - 1],
+    };
+
+    const rowCellBuckets = cellBuckets.get(rowKey);
+    for (const cellPlan of cellWritePlans) {
+      row[cellPlan.key] = rowCellBuckets?.get(cellPlan.colKey) ?? null;
+    }
+    row[rowTotalKey] = rowTotalBuckets.get(rowKey) ?? 0;
+
+    if (depth === 0) {
+      rootRows.push(row);
+    } else {
+      let siblings = childrenMap.get(parentKey);
+      if (!siblings) {
+        siblings = [];
+        childrenMap.set(parentKey, siblings);
+      }
+      siblings.push(row);
+    }
+  }
+
+  const grandTotal = emptyRow('Grand Total', -1);
+  for (const cellPlan of cellWritePlans) {
+    grandTotal[cellPlan.key] = cellPlan.colKey === TOTAL_KEY
+      ? grandTotalValue
+      : (colBuckets.get(cellPlan.colKey) ?? 0);
+  }
+  grandTotal[rowTotalKey] = grandTotalValue;
+
+  return { rows: rootRows, columnNodes, grandTotal, childrenMap };
 }
 
 function buildNestedKeys(values: string[]): string[] {
