@@ -43,6 +43,7 @@ export interface ColumnNode {
 
 export interface PivotRow {
   __rowKeys: string[];
+  __key: string;
   __depth: number;
   __isGroup: boolean;
   __label: string;

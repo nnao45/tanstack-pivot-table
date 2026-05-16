@@ -290,9 +290,9 @@ export class PivotTableComponent {
   private allRowsMap = computed<Map<string, PivotRow>>(() => {
     const map = new Map<string, PivotRow>();
     const pd = this.pivotData();
-    for (const row of pd.rows) map.set(row.__rowKeys.join('|||'), row);
+    for (const row of pd.rows) map.set(row.__key, row);
     for (const rows of pd.childrenMap.values()) {
-      for (const row of rows) map.set(row.__rowKeys.join('|||'), row);
+      for (const row of rows) map.set(row.__key, row);
     }
     return map;
   });
@@ -536,7 +536,7 @@ export class PivotTableComponent {
     data: this.pivotData().rows,
     columns: this.columns(),
     getSubRows: (row: PivotRow) =>
-      this.pivotData().childrenMap.get(row.__rowKeys.join('|||')) ?? [],
+      this.pivotData().childrenMap.get(row.__key) ?? [],
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
@@ -563,6 +563,21 @@ export class PivotTableComponent {
     this.table.getHeaderGroups().filter(group => !this.isHeaderGroupAllEmpty(group.headers))
   );
   leafColumns = computed(() => this.table.getVisibleLeafColumns());
+  private cellValueGetters = computed(() => {
+    const getters = new Map<string, (row: Row<PivotRow>) => unknown>();
+    for (const column of this.leafColumns()) {
+      const columnId = column.id;
+      if (columnId === '__rowLabel') {
+        getters.set(columnId, row => row.original.__label);
+      } else if (columnId.startsWith('subtotal__')) {
+        const cellKey = columnId.replace('subtotal__', '__cell__');
+        getters.set(columnId, row => row.original[cellKey]);
+      } else {
+        getters.set(columnId, row => row.original[columnId]);
+      }
+    }
+    return getters;
+  });
   rowModelRows = computed(() => this.table.getRowModel().rows);
   grandTotalCells = computed(() => this.table.getAllLeafColumns().map(col => ({ id: col.id })));
 
@@ -647,11 +662,7 @@ export class PivotTableComponent {
   }
 
   rowCellValue(row: Row<PivotRow>, columnId: string): unknown {
-    if (columnId === '__rowLabel') return row.original.__label;
-    if (columnId.startsWith('subtotal__')) {
-      return row.original[columnId.replace('subtotal__', '__cell__')];
-    }
-    return row.original[columnId];
+    return this.cellValueGetters().get(columnId)?.(row);
   }
 
   visibleHeaders(headers: Header<PivotRow, unknown>[]): Header<PivotRow, unknown>[] {

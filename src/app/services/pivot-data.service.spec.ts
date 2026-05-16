@@ -37,8 +37,10 @@ describe('PivotDataService', () => {
     });
 
     expect(result.rows.map(row => row.__label)).toEqual(['East', 'West']);
+    expect(result.rows.map(row => row.__key)).toEqual(['East', 'West']);
     expect(result.rows.every(row => row.__isGroup)).toBe(true);
     expect(result.childrenMap.get('East')?.map(row => row.__label)).toEqual(['Hardware']);
+    expect(result.childrenMap.get('West')?.map(row => row.__key)).toEqual(['West|||Hardware', 'West|||Software']);
     expect(result.childrenMap.get('West')?.map(row => row.__label)).toEqual(['Hardware', 'Software']);
   });
 
@@ -86,6 +88,26 @@ describe('PivotDataService', () => {
     expect(west[makeCellKey('Online', 'product', 'count')]).toBe(2);
     expect(west[makeRowTotalKey('product', 'count')]).toBe(3);
     expect(result.grandTotal[makeRowTotalKey('product', 'count')]).toBe(5);
+  });
+
+  it('does not double count when the same field has multiple aggregations', () => {
+    const result = compute({
+      rowFields: ['region'],
+      columnFields: [],
+      valueFields: [
+        { fieldId: 'sales', aggFn: 'sum', label: 'Sales' },
+        { fieldId: 'sales', aggFn: 'count', label: 'Sales Count' },
+        { fieldId: 'sales', aggFn: 'avg', label: 'Avg Sales' },
+      ],
+    });
+
+    const west = result.rows.find(row => row.__label === 'West')!;
+    expect(west[makeCellKey('__total__', 'sales', 'sum')]).toBe(450);
+    expect(west[makeCellKey('__total__', 'sales', 'count')]).toBe(3);
+    expect(west[makeCellKey('__total__', 'sales', 'avg')]).toBe(150);
+    expect(west[makeRowTotalKey('sales', 'sum')]).toBe(450);
+    expect(west[makeRowTotalKey('sales', 'count')]).toBe(3);
+    expect(west[makeRowTotalKey('sales', 'avg')]).toBe(150);
   });
 
   it('keeps missing row/column intersections as null while totals remain numeric', () => {

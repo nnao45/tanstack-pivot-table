@@ -15,7 +15,14 @@ interface MeasureStats {
 }
 
 type BucketStats = Map<string, MeasureStats>;
-type MeasurePlan = Map<string, boolean>;
+
+interface MeasurePlanEntry {
+  field: string;
+  key: keyof SaleRecord;
+  needsValueStats: boolean;
+}
+
+type MeasurePlan = MeasurePlanEntry[];
 
 interface RowEntry {
   parts: string[];
@@ -156,6 +163,7 @@ export class PivotDataService {
       const depth = parts.length - 1;
       const row: PivotRow = {
         __rowKeys: parts,
+        __key: rowKey,
         __depth: depth,
         __isGroup: depth < rowFields.length - 1,
         __label: parts[parts.length - 1],
@@ -259,11 +267,15 @@ function createBucketStats(): BucketStats {
 }
 
 function buildMeasurePlan(valueFields: { fieldId: string; aggFn: AggFnName }[]): MeasurePlan {
-  const plan: MeasurePlan = new Map();
+  const needsValueStatsByField = new Map<string, boolean>();
   for (const { fieldId, aggFn } of valueFields) {
-    plan.set(fieldId, (plan.get(fieldId) ?? false) || aggFn !== 'count');
+    needsValueStatsByField.set(fieldId, (needsValueStatsByField.get(fieldId) ?? false) || aggFn !== 'count');
   }
-  return plan;
+  return [...needsValueStatsByField].map(([field, needsValueStats]) => ({
+    field,
+    key: field as keyof SaleRecord,
+    needsValueStats,
+  }));
 }
 
 function addToStatsMap(map: Map<string, BucketStats>, key: string, record: SaleRecord, measurePlan: MeasurePlan) {
@@ -291,7 +303,7 @@ function addToCellStatsMap(
 }
 
 function addToBucket(bucket: BucketStats, record: SaleRecord, measurePlan: MeasurePlan) {
-  for (const [field, needsValueStats] of measurePlan) {
+  for (const { field, key, needsValueStats } of measurePlan) {
     let stats = bucket.get(field);
     if (!stats) {
       stats = { count: 0, sum: 0, min: Infinity, max: -Infinity };
@@ -299,7 +311,7 @@ function addToBucket(bucket: BucketStats, record: SaleRecord, measurePlan: Measu
     }
     stats.count++;
     if (!needsValueStats) continue;
-    const value = Number(record[field as keyof SaleRecord]);
+    const value = Number(record[key]);
     stats.sum += value;
     if (value < stats.min) stats.min = value;
     if (value > stats.max) stats.max = value;
@@ -307,5 +319,5 @@ function addToBucket(bucket: BucketStats, record: SaleRecord, measurePlan: Measu
 }
 
 function emptyRow(label: string, depth: number): PivotRow {
-  return { __rowKeys: [label], __depth: depth, __isGroup: false, __label: label };
+  return { __rowKeys: [label], __key: label, __depth: depth, __isGroup: false, __label: label };
 }
