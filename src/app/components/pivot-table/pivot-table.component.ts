@@ -12,10 +12,13 @@ import {
   FlexRenderDirective,
   getCoreRowModel,
   getExpandedRowModel,
+  getSortedRowModel,
   ColumnDef,
   createColumnHelper,
   ExpandedState,
   Row,
+  SortingState,
+  ColumnSizingState,
 } from '@tanstack/angular-table';
 import { ColumnNode, PivotConfig, PivotRow, SaleRecord } from '../../types';
 import { PivotDataService, makeCellKey, makeRowTotalKey } from '../../services/pivot-data.service';
@@ -23,6 +26,9 @@ import { ALL_FIELDS } from '../../data/sales-data';
 
 const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 const columnHelper = createColumnHelper<PivotRow>();
+
+const ROW_LABEL_SIZE = 200;
+const VALUE_COL_SIZE = 90;
 
 @Component({
   selector: 'app-pivot-table',
@@ -36,33 +42,68 @@ const columnHelper = createColumnHelper<PivotRow>();
       </div>
     } @else {
       <div class="overflow-auto h-full">
-        <table class="border-collapse text-xs w-max min-w-full">
+        <table class="border-collapse text-xs" style="width: max-content; min-width: 100%">
           <thead>
             @for (headerGroup of table.getHeaderGroups(); track headerGroup.id) {
               <tr>
                 @for (header of headerGroup.headers; track header.id) {
                   @let expandNode = getExpandableNode(header.column.id);
+                  @let isPinned = header.column.getIsPinned();
                   <th
                     [attr.colSpan]="header.colSpan"
-                    [class]="getHeaderClass(header.id, headerGroup.depth)"
-                    class="border border-gray-300 px-3 py-2 whitespace-nowrap sticky top-0 z-10"
+                    [style.width.px]="header.getSize()"
+                    [style.min-width.px]="header.getSize()"
+                    [style.position]="isPinned ? 'sticky' : 'relative'"
+                    [style.left.px]="isPinned === 'left' ? header.column.getStart('left') : null"
+                    [style.z-index]="isPinned ? 30 : 10"
+                    [class]="getHeaderClass(header.id, headerGroup.depth, isPinned !== false)"
+                    class="border border-gray-300 px-2 py-2 whitespace-nowrap"
                     [class.cursor-pointer]="expandNode !== null"
                     (click)="expandNode && toggleColExpand(expandNode.key)"
                   >
                     @if (!header.isPlaceholder) {
-                      <div class="flex items-center gap-1"
-                           [class.justify-center]="headerGroup.depth === 0 && header.id !== '__rowLabel'"
+                      <div class="flex items-center gap-1 overflow-hidden"
+                           [class.justify-center]="headerGroup.depth === 0 && header.id !== '__rowLabel' && header.id !== '__rowLabelGroup'"
                            [class.justify-start]="header.id === '__rowLabel' || header.id === '__rowLabelGroup'"
                            [class.justify-end]="headerGroup.depth > 0 && header.id !== '__rowLabel'">
+                        <!-- Column expand toggle -->
                         @if (expandNode) {
-                          <span class="text-white/70 text-xs">
+                          <span class="text-white/70 text-xs flex-none">
                             {{ columnExpanded().has(expandNode.key) ? '▾' : '▸' }}
                           </span>
                         }
-                        <ng-container *flexRender="header.column.columnDef.header; props: header.getContext(); let value">
-                          {{ value }}
-                        </ng-container>
+                        <!-- Header text -->
+                        <span class="truncate">
+                          <ng-container *flexRender="header.column.columnDef.header; props: header.getContext(); let value">
+                            {{ value }}
+                          </ng-container>
+                        </span>
+                        <!-- Sort icon (leaf data columns only) -->
+                        @if (header.column.getCanSort()) {
+                          <span
+                            (click)="$event.stopPropagation(); header.column.getToggleSortingHandler()?.($event)"
+                            class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
+                          >
+                            @switch (header.column.getIsSorted()) {
+                              @case ('asc')  { <span>▲</span> }
+                              @case ('desc') { <span>▼</span> }
+                              @default       { <span>⇅</span> }
+                            }
+                          </span>
+                        }
                       </div>
+                    }
+                    <!-- Resize handle -->
+                    @if (header.column.getCanResize()) {
+                      <div
+                        (mousedown)="header.getResizeHandler()($event)"
+                        (touchstart)="header.getResizeHandler()($event)"
+                        class="absolute right-0 top-0 h-full w-1.5 cursor-col-resize select-none z-10
+                               opacity-0 hover:opacity-100"
+                        [class.opacity-100]="header.column.getIsResizing()"
+                        [class.bg-white]="header.column.getIsResizing()"
+                        [class.bg-white\/40]="!header.column.getIsResizing()"
+                      ></div>
                     }
                   </th>
                 }
@@ -73,9 +114,15 @@ const columnHelper = createColumnHelper<PivotRow>();
             @for (row of table.getRowModel().rows; track row.id) {
               <tr [class]="getRowClass(row)">
                 @for (cell of row.getVisibleCells(); track cell.id) {
+                  @let isPinnedCell = cell.column.getIsPinned();
                   <td
-                    [class]="getCellClass(cell.column.id, row)"
-                    class="border border-gray-200 px-3 py-1.5 whitespace-nowrap"
+                    [style.width.px]="cell.column.getSize()"
+                    [style.min-width.px]="cell.column.getSize()"
+                    [style.position]="isPinnedCell ? 'sticky' : ''"
+                    [style.left.px]="isPinnedCell === 'left' ? cell.column.getStart('left') : null"
+                    [style.z-index]="isPinnedCell ? 2 : ''"
+                    [class]="getCellClass(cell.column.id, row, isPinnedCell !== false)"
+                    class="border border-gray-200 px-2 py-1.5 whitespace-nowrap overflow-hidden"
                   >
                     @if (cell.column.id === '__rowLabel') {
                       <div class="flex items-center gap-1" [style.padding-left.px]="row.depth * 20">
@@ -87,7 +134,7 @@ const columnHelper = createColumnHelper<PivotRow>();
                         } @else {
                           <span class="w-4 flex-none"></span>
                         }
-                        <span>{{ row.original.__label }}</span>
+                        <span class="truncate">{{ row.original.__label }}</span>
                       </div>
                     } @else {
                       <span [class]="isNullCell(cell.getValue()) ? 'text-gray-300' : ''">
@@ -101,9 +148,14 @@ const columnHelper = createColumnHelper<PivotRow>();
             <!-- Grand Total -->
             <tr class="bg-gray-800 text-white font-bold sticky bottom-0">
               @for (cell of grandTotalCells(); track cell.id) {
+                @let isPinnedGT = grandTotalPinned(cell.id);
                 <td
+                  [style.width.px]="grandTotalWidth(cell.id)"
+                  [style.position]="isPinnedGT ? 'sticky' : ''"
+                  [style.left.px]="isPinnedGT ? 0 : null"
+                  [style.z-index]="isPinnedGT ? 3 : ''"
                   [class]="getGrandTotalCellClass(cell.id)"
-                  class="border border-gray-600 px-3 py-1.5 whitespace-nowrap"
+                  class="border border-gray-600 px-2 py-1.5 whitespace-nowrap"
                 >
                   @if (cell.id === '__rowLabel') {
                     <div class="pl-4">Grand Total</div>
@@ -128,10 +180,17 @@ export class PivotTableComponent {
   private pivotService = inject(PivotDataService);
 
   pivotData = computed(() => this.pivotService.compute(this.data(), this.config()));
-  expanded = signal<ExpandedState>({});
-  columnExpanded = signal<Set<string>>(new Set());
 
-  // Only expandable nodes (those with children) → used for toggle button
+  // Row expand state
+  expanded = signal<ExpandedState>({});
+  // Column expand state (custom — not TanStack)
+  columnExpanded = signal<Set<string>>(new Set());
+  // Sort state
+  sorting = signal<SortingState>([]);
+  // Column sizing state
+  columnSizing = signal<ColumnSizingState>({});
+
+  // Expandable column node map (colGroup__ ID → ColumnNode)
   nodeMap = computed<Map<string, ColumnNode>>(() => {
     const map = new Map<string, ColumnNode>();
     const traverse = (nodes: ColumnNode[]) => {
@@ -147,26 +206,30 @@ export class PivotTableComponent {
   columns = computed<ColumnDef<PivotRow>[]>(() => {
     const cfg = this.config();
     const pd = this.pivotData();
-
-    // When any top-level node is expandable, we need 2 header rows → wrap rowLabel & rowTotal in groups
     const anyExpandable = pd.columnNodes.some(n => n.children.length > 0);
     const needsGroupWrapper = anyExpandable || cfg.valueFields.length > 1;
 
     const cols: ColumnDef<PivotRow>[] = [];
 
-    // Row label column
+    // Row label (pinned left)
     const rowHeader = cfg.rowFields.map(f => ALL_FIELDS.find(fd => fd.id === f)?.label ?? f).join(' / ');
     if (needsGroupWrapper) {
       cols.push(columnHelper.group({
         id: '__rowLabelGroup',
         header: rowHeader,
-        columns: [columnHelper.display({ id: '__rowLabel', header: '', cell: () => '' }) as ColumnDef<PivotRow>],
+        columns: [columnHelper.display({
+          id: '__rowLabel', header: '', cell: () => '',
+          size: ROW_LABEL_SIZE, enableResizing: true,
+        }) as ColumnDef<PivotRow>],
       }) as ColumnDef<PivotRow>);
     } else {
-      cols.push(columnHelper.display({ id: '__rowLabel', header: rowHeader, cell: () => '' }) as ColumnDef<PivotRow>);
+      cols.push(columnHelper.display({
+        id: '__rowLabel', header: rowHeader, cell: () => '',
+        size: ROW_LABEL_SIZE, enableResizing: true,
+      }) as ColumnDef<PivotRow>);
     }
 
-    // Column pivot: recursively from tree
+    // Column pivot
     for (const node of pd.columnNodes) {
       cols.push(...this.generateColsFromNode(node));
     }
@@ -177,20 +240,21 @@ export class PivotTableComponent {
         cols.push(columnHelper.group({
           id: '__rowTotalGroup',
           header: 'Row Total',
-          columns: cfg.valueFields.map(vf => columnHelper.accessor(
-            (row: PivotRow) => row[makeRowTotalKey(vf.fieldId, vf.aggFn)],
-            {
-              id: makeRowTotalKey(vf.fieldId, vf.aggFn),
-              header: cfg.valueFields.length === 1 ? '' : this.aggLabel(vf),
-            }
-          ) as ColumnDef<PivotRow>),
+          columns: cfg.valueFields.map(vf => this.makeValueAccessor(
+            makeRowTotalKey(vf.fieldId, vf.aggFn),
+            (row) => row[makeRowTotalKey(vf.fieldId, vf.aggFn)],
+            cfg.valueFields.length === 1 ? '' : this.aggLabel(vf),
+            false
+          )),
         }) as ColumnDef<PivotRow>);
       } else {
         const vf = cfg.valueFields[0];
-        cols.push(columnHelper.accessor(
-          (row: PivotRow) => row[makeRowTotalKey(vf.fieldId, vf.aggFn)],
-          { id: makeRowTotalKey(vf.fieldId, vf.aggFn), header: 'Row Total' }
-        ) as ColumnDef<PivotRow>);
+        cols.push(this.makeValueAccessor(
+          makeRowTotalKey(vf.fieldId, vf.aggFn),
+          (row) => row[makeRowTotalKey(vf.fieldId, vf.aggFn)],
+          'Row Total',
+          true
+        ));
       }
     }
 
@@ -203,60 +267,56 @@ export class PivotTableComponent {
     const isExpanded = hasChildren && this.columnExpanded().has(node.key);
 
     if (!hasChildren) {
-      // True leaf: single accessor, or group for multiple value fields
       if (cfg.valueFields.length === 1) {
         const vf = cfg.valueFields[0];
-        return [columnHelper.accessor(
-          (row: PivotRow) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
-          { id: makeCellKey(node.key, vf.fieldId, vf.aggFn), header: node.value }
-        ) as ColumnDef<PivotRow>];
+        return [this.makeValueAccessor(
+          makeCellKey(node.key, vf.fieldId, vf.aggFn),
+          (row) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
+          node.value, true
+        )];
       }
       return [columnHelper.group({
         id: `colGroup__${node.key}`,
         header: node.value,
-        columns: cfg.valueFields.map(vf => columnHelper.accessor(
-          (row: PivotRow) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
-          { id: makeCellKey(node.key, vf.fieldId, vf.aggFn), header: this.aggLabel(vf) }
-        ) as ColumnDef<PivotRow>),
+        columns: cfg.valueFields.map(vf => this.makeValueAccessor(
+          makeCellKey(node.key, vf.fieldId, vf.aggFn),
+          (row) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
+          this.aggLabel(vf), true
+        )),
       }) as ColumnDef<PivotRow>];
     }
 
-    // Expandable node: ALWAYS use columnHelper.group so it stays in the top header row.
-    // Collapsed → single sub-column with empty header
-    // Expanded  → sub-node columns + subtotal column
     if (!isExpanded) {
       return [columnHelper.group({
         id: `colGroup__${node.key}`,
         header: node.value,
-        columns: cfg.valueFields.map(vf => columnHelper.accessor(
-          (row: PivotRow) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
-          {
-            id: makeCellKey(node.key, vf.fieldId, vf.aggFn),
-            header: cfg.valueFields.length === 1 ? '' : this.aggLabel(vf),
-          }
-        ) as ColumnDef<PivotRow>),
+        columns: cfg.valueFields.map(vf => this.makeValueAccessor(
+          makeCellKey(node.key, vf.fieldId, vf.aggFn),
+          (row) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
+          cfg.valueFields.length === 1 ? '' : this.aggLabel(vf),
+          true
+        )),
       }) as ColumnDef<PivotRow>];
     }
 
-    // Expanded: sub-columns + subtotal
+    // Expanded
     const subCols: ColumnDef<PivotRow>[] = node.children.flatMap(child => this.generateColsFromNode(child));
-
-    // Subtotal uses `subtotal__` prefix for ID (so getCellClass can identify it),
-    // grandTotalValue resolves it via the replace mapping below.
     if (cfg.valueFields.length === 1) {
       const vf = cfg.valueFields[0];
-      subCols.push(columnHelper.accessor(
-        (row: PivotRow) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
-        { id: `subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`, header: 'Subtotal' }
-      ) as ColumnDef<PivotRow>);
+      subCols.push(this.makeValueAccessor(
+        `subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`,
+        (row) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
+        'Subtotal', false
+      ));
     } else {
       subCols.push(columnHelper.group({
         id: `subtotalGroup__${node.key}`,
         header: 'Subtotal',
-        columns: cfg.valueFields.map(vf => columnHelper.accessor(
-          (row: PivotRow) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
-          { id: `subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`, header: this.aggLabel(vf) }
-        ) as ColumnDef<PivotRow>),
+        columns: cfg.valueFields.map(vf => this.makeValueAccessor(
+          `subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`,
+          (row) => row[makeCellKey(node.key, vf.fieldId, vf.aggFn)],
+          this.aggLabel(vf), false
+        )),
       }) as ColumnDef<PivotRow>);
     }
 
@@ -267,16 +327,50 @@ export class PivotTableComponent {
     }) as ColumnDef<PivotRow>];
   }
 
+  // Build a sortable, resizable value accessor column
+  private makeValueAccessor(
+    id: string,
+    accessorFn: (row: PivotRow) => unknown,
+    header: string,
+    enableSorting: boolean
+  ): ColumnDef<PivotRow> {
+    return columnHelper.accessor(accessorFn as (row: PivotRow) => number | null, {
+      id,
+      header,
+      size: VALUE_COL_SIZE,
+      enableResizing: true,
+      enableSorting,
+      sortingFn: (a, b, colId) => {
+        const va = (a.original[colId] as number) ?? -Infinity;
+        const vb = (b.original[colId] as number) ?? -Infinity;
+        return va - vb;
+      },
+    }) as ColumnDef<PivotRow>;
+  }
+
   table = createAngularTable(() => ({
     data: this.pivotData().rows,
     columns: this.columns(),
     getSubRows: (row: PivotRow) =>
       this.pivotData().childrenMap.get(row.__rowKeys.join('|||')) ?? [],
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
-    state: { expanded: this.expanded() },
+    columnResizeMode: 'onChange' as const,
+    state: {
+      expanded: this.expanded(),
+      sorting: this.sorting(),
+      columnSizing: this.columnSizing(),
+      columnPinning: { left: ['__rowLabel'] },
+    },
     onExpandedChange: (updater: ExpandedState | ((old: ExpandedState) => ExpandedState)) => {
       this.expanded.update(old => typeof updater === 'function' ? updater(old) : updater);
+    },
+    onSortingChange: (updater: SortingState | ((old: SortingState) => SortingState)) => {
+      this.sorting.update(old => typeof updater === 'function' ? updater(old) : updater);
+    },
+    onColumnSizingChange: (updater: ColumnSizingState | ((old: ColumnSizingState) => ColumnSizingState)) => {
+      this.columnSizing.update(old => typeof updater === 'function' ? updater(old) : updater);
     },
     autoResetExpanded: false,
   }));
@@ -284,11 +378,18 @@ export class PivotTableComponent {
   grandTotalCells = computed(() => this.table.getAllLeafColumns().map(col => ({ id: col.id })));
 
   grandTotalValue(colId: string): unknown {
-    // subtotal__ columns access the parent node's aggregated value via __cell__ key
     if (colId.startsWith('subtotal__')) {
       return this.pivotData().grandTotal[colId.replace('subtotal__', '__cell__')];
     }
     return this.pivotData().grandTotal[colId];
+  }
+
+  grandTotalWidth(colId: string): number {
+    return this.table.getColumn(colId)?.getSize() ?? VALUE_COL_SIZE;
+  }
+
+  grandTotalPinned(colId: string): boolean {
+    return this.table.getColumn(colId)?.getIsPinned() === 'left';
   }
 
   getExpandableNode(colId: string): ColumnNode | null {
@@ -303,8 +404,10 @@ export class PivotTableComponent {
     });
   }
 
-  getHeaderClass(headerId: string, depth: number): string {
-    if (headerId === '__rowLabel' || headerId === '__rowLabelGroup') return 'bg-gray-700 text-white text-left';
+  getHeaderClass(headerId: string, depth: number, pinned: boolean): string {
+    const pinnedShadow = pinned ? 'shadow-[2px_0_4px_-2px_rgba(0,0,0,0.3)]' : '';
+    if (headerId === '__rowLabel' || headerId === '__rowLabelGroup')
+      return `bg-gray-700 text-white text-left ${pinnedShadow}`;
     if (headerId === '__rowTotalGroup' || headerId.startsWith('__rowTotal'))
       return depth === 0 ? 'bg-blue-800 text-white text-center' : 'bg-blue-600 text-white';
     if (headerId.startsWith('subtotalGroup__')) return 'bg-amber-600 text-white text-center';
@@ -317,8 +420,10 @@ export class PivotTableComponent {
     return row.original.__isGroup ? 'bg-gray-100 font-medium' : 'bg-white hover:bg-blue-50';
   }
 
-  getCellClass(colId: string, row: Row<PivotRow>): string {
-    const base = colId === '__rowLabel' ? '' : 'text-right tabular-nums';
+  getCellClass(colId: string, row: Row<PivotRow>, pinned: boolean): string {
+    const pinnedShadow = pinned ? 'shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]' : '';
+    if (colId === '__rowLabel') return `${pinnedShadow} ${row.original.__isGroup ? 'bg-gray-100' : 'bg-white'}`;
+    const base = 'text-right tabular-nums';
     if (colId.startsWith('__rowTotal')) return `${base} bg-blue-50 border-l-2 border-blue-200`;
     if (colId.startsWith('subtotal__')) return `${base} bg-amber-50 border-l border-amber-200`;
     if (row.original.__isGroup) return `${base} text-gray-700`;

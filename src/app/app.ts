@@ -52,7 +52,7 @@ export class App {
 
   pivotConfig = signal<PivotConfig>({
     rowFields: ['region', 'category'],
-    columnFields: ['category', 'month'],
+    columnFields: ['channel', 'month'],
     valueFields: [{ fieldId: 'sales', aggFn: 'sum', label: 'Sales' }],
   });
 

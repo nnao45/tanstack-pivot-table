@@ -2,10 +2,12 @@ export interface SaleRecord {
   region: string;
   category: string;
   product: string;
+  channel: string;
   month: string;
   sales: number;
   quantity: number;
   profit: number;
+  cost: number;
 }
 
 export type AggFnName = 'sum' | 'count' | 'avg' | 'min' | 'max';
