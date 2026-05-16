@@ -42,7 +42,8 @@ const VALUE_COL_SIZE = 90;
         左のパネルからRows・Valuesにフィールドを追加してください
       </div>
     } @else {
-      <div class="overflow-auto h-full">
+      <div class="flex flex-col h-full">
+      <div class="overflow-auto flex-1">
         <table class="border-collapse text-xs" style="width: max-content; min-width: 100%">
           <thead>
             @for (headerGroup of table.getHeaderGroups(); track headerGroup.id) {
@@ -80,7 +81,20 @@ const VALUE_COL_SIZE = 90;
                             {{ value }}
                           </ng-container>
                         </span>
-                        <!-- Sort icon on group header (collapsed single-value expandable columns) -->
+                        <!-- Row label sort (needsGroupWrapper=true: ⇅ on __rowLabelGroup) -->
+                        @if (header.column.id === '__rowLabelGroup') {
+                          <span
+                            (click)="$event.stopPropagation(); toggleRowLabelSort($event)"
+                            class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
+                          >
+                            @switch (rowLabelSortState()) {
+                              @case ('asc')  { <span>▲</span> }
+                              @case ('desc') { <span>▼</span> }
+                              @default       { <span>⇅</span> }
+                            }
+                          </span>
+                        }
+                        <!-- Row sort: only on collapsed single-value expandable columns & Row Total -->
                         @if (sortableGroupMap().has(header.column.id)) {
                           <span
                             (click)="$event.stopPropagation(); toggleGroupLeafSort(header.column.id, $event)"
@@ -150,7 +164,17 @@ const VALUE_COL_SIZE = 90;
                         } @else {
                           <span class="w-4 flex-none"></span>
                         }
-                        <span class="truncate">{{ row.original.__label }}</span>
+                        <span class="truncate flex-1">{{ row.original.__label }}</span>
+                        @let rk = row.original.__rowKeys.join('|||');
+                        <span
+                          class="flex-none cursor-pointer select-none text-xs px-0.5 text-gray-300 hover:text-blue-500"
+                          [class.text-blue-500]="isActiveColumnSortRow(rk)"
+                          (click)="$event.stopPropagation(); toggleColumnSortByRow(rk)"
+                        >
+                          @if (isActiveColumnSortRow(rk)) {
+                            {{ columnSortByRow()!.direction === 'desc' ? '↓' : '↑' }}
+                          } @else { ↕ }
+                        </span>
                       </div>
                     } @else {
                       <span [class]="isNullCell(cell.getValue()) ? 'text-gray-300' : ''">
@@ -174,7 +198,19 @@ const VALUE_COL_SIZE = 90;
                   class="border border-gray-600 px-2 py-1.5 whitespace-nowrap"
                 >
                   @if (cell.id === '__rowLabel') {
-                    <div class="pl-4">Grand Total</div>
+                    <div class="pl-4 flex items-center gap-1">
+                      <span class="flex-1">Grand Total</span>
+                      <span
+                        class="flex-none cursor-pointer select-none text-xs px-0.5"
+                        [class.text-white]="isActiveColumnSortRow('__grandTotal__')"
+                        [class.text-gray-500]="!isActiveColumnSortRow('__grandTotal__')"
+                        (click)="toggleColumnSortByRow('__grandTotal__')"
+                      >
+                        @if (isActiveColumnSortRow('__grandTotal__')) {
+                          {{ columnSortByRow()!.direction === 'desc' ? '↓' : '↑' }}
+                        } @else { ↕ }
+                      </span>
+                    </div>
                   } @else {
                     <span [class]="isNullCell(grandTotalValue(cell.id)) ? 'text-gray-500' : ''">
                       {{ formatCell(grandTotalValue(cell.id)) }}
@@ -185,6 +221,7 @@ const VALUE_COL_SIZE = 90;
             </tr>
           </tbody>
         </table>
+      </div>
       </div>
     }
   `,
@@ -205,6 +242,19 @@ export class PivotTableComponent {
   sorting = signal<SortingState>([]);
   // Column sizing state
   columnSizing = signal<ColumnSizingState>({});
+  // Column sort triggered by a specific row. '__grandTotal__' = Grand Total row.
+  columnSortByRow = signal<{ rowKeys: string; direction: 'asc' | 'desc' } | null>(null);
+
+  // Flat map of ALL rows (root + children) for sort lookup
+  private allRowsMap = computed<Map<string, PivotRow>>(() => {
+    const map = new Map<string, PivotRow>();
+    const pd = this.pivotData();
+    for (const row of pd.rows) map.set(row.__rowKeys.join('|||'), row);
+    for (const rows of pd.childrenMap.values()) {
+      for (const row of rows) map.set(row.__rowKeys.join('|||'), row);
+    }
+    return map;
+  });
 
   // Expandable column node map (colGroup__ ID → ColumnNode)
   nodeMap = computed<Map<string, ColumnNode>>(() => {
@@ -226,6 +276,7 @@ export class PivotTableComponent {
     const vf = cfg.valueFields[0];
     const expanded = this.columnExpanded();
     const map = new Map<string, string>();
+    const pd = this.pivotData();
     const traverse = (nodes: ColumnNode[]) => {
       for (const node of nodes) {
         if (node.children.length > 0 && !expanded.has(node.key)) {
@@ -234,7 +285,12 @@ export class PivotTableComponent {
         traverse(node.children);
       }
     };
-    traverse(this.pivotData().columnNodes);
+    traverse(pd.columnNodes);
+    // Row Total group exists when anyExpandable is true (needsGroupWrapper=true)
+    const anyExpandable = pd.columnNodes.some(n => n.children.length > 0);
+    if (anyExpandable && cfg.columnFields.length > 0) {
+      map.set('__rowTotalGroup', makeRowTotalKey(vf.fieldId, vf.aggFn));
+    }
     return map;
   });
 
@@ -251,24 +307,28 @@ export class PivotTableComponent {
 
     // Row label (pinned left)
     const rowHeader = cfg.rowFields.map(f => ALL_FIELDS.find(fd => fd.id === f)?.label ?? f).join(' / ');
+    const rowLabelAccessorDef = (header: string) => columnHelper.accessor(
+      (row: PivotRow) => row.__label,
+      {
+        id: '__rowLabel', header, cell: () => '',
+        size: ROW_LABEL_SIZE, enableResizing: true,
+        enableSorting: true,
+        sortingFn: (a, b) => a.original.__label.localeCompare(b.original.__label),
+      }
+    ) as ColumnDef<PivotRow>;
+
     if (needsGroupWrapper) {
       cols.push(columnHelper.group({
         id: '__rowLabelGroup',
         header: rowHeader,
-        columns: [columnHelper.display({
-          id: '__rowLabel', header: '', cell: () => '',
-          size: ROW_LABEL_SIZE, enableResizing: true,
-        }) as ColumnDef<PivotRow>],
+        columns: [rowLabelAccessorDef('')],
       }) as ColumnDef<PivotRow>);
     } else {
-      cols.push(columnHelper.display({
-        id: '__rowLabel', header: rowHeader, cell: () => '',
-        size: ROW_LABEL_SIZE, enableResizing: true,
-      }) as ColumnDef<PivotRow>);
+      cols.push(rowLabelAccessorDef(rowHeader));
     }
 
     // Column pivot
-    for (const node of pd.columnNodes) {
+    for (const node of this.sortNodes(pd.columnNodes)) {
       cols.push(...this.generateColsFromNode(node));
     }
 
@@ -282,7 +342,7 @@ export class PivotTableComponent {
             makeRowTotalKey(vf.fieldId, vf.aggFn),
             (row) => row[makeRowTotalKey(vf.fieldId, vf.aggFn)],
             cfg.valueFields.length === 1 ? '' : this.aggLabel(vf),
-            false
+            true
           )),
         }) as ColumnDef<PivotRow>);
       } else {
@@ -298,6 +358,34 @@ export class PivotTableComponent {
 
     return cols;
   });
+
+  private sortNodes(nodes: ColumnNode[]): ColumnNode[] {
+    const sort = this.columnSortByRow();
+    if (!sort) return nodes;
+    const vf = this.config().valueFields[0];
+    if (!vf) return nodes;
+    const rowData = sort.rowKeys === '__grandTotal__'
+      ? this.pivotData().grandTotal
+      : this.allRowsMap().get(sort.rowKeys);
+    if (!rowData) return nodes;
+    return [...nodes].sort((a, b) => {
+      const va = (rowData[makeCellKey(a.key, vf.fieldId, vf.aggFn)] as number) ?? -Infinity;
+      const vb = (rowData[makeCellKey(b.key, vf.fieldId, vf.aggFn)] as number) ?? -Infinity;
+      return sort.direction === 'asc' ? va - vb : vb - va;
+    });
+  }
+
+  toggleColumnSortByRow(rowKeys: string) {
+    this.columnSortByRow.update(cur => {
+      if (!cur || cur.rowKeys !== rowKeys) return { rowKeys, direction: 'desc' };
+      if (cur.direction === 'desc') return { rowKeys, direction: 'asc' };
+      return null;
+    });
+  }
+
+  isActiveColumnSortRow(rowKeys: string): boolean {
+    return this.columnSortByRow()?.rowKeys === rowKeys;
+  }
 
   private generateColsFromNode(node: ColumnNode): ColumnDef<PivotRow>[] {
     const cfg = this.config();
@@ -338,7 +426,7 @@ export class PivotTableComponent {
     }
 
     // Expanded
-    const subCols: ColumnDef<PivotRow>[] = node.children.flatMap(child => this.generateColsFromNode(child));
+    const subCols: ColumnDef<PivotRow>[] = this.sortNodes(node.children).flatMap(child => this.generateColsFromNode(child));
     // When children themselves have children, they render as groups (depth +1).
     // Wrap Subtotal in a group too so it appears in the same header row as siblings,
     // and its empty sub-col gets hidden by isHeaderGroupAllEmpty.
@@ -443,12 +531,21 @@ export class PivotTableComponent {
   isHeaderGroupAllEmpty(headers: Header<PivotRow, unknown>[]): boolean {
     return headers.every(h =>
       h.isPlaceholder ||
+      h.column.id === '__rowLabel' ||
       (typeof h.column.columnDef.header === 'string' && h.column.columnDef.header === '')
     );
   }
 
   getExpandableNode(colId: string): ColumnNode | null {
     return this.nodeMap().get(colId) ?? null;
+  }
+
+  rowLabelSortState = computed(() =>
+    this.table.getColumn('__rowLabel')?.getIsSorted() ?? false
+  );
+
+  toggleRowLabelSort(event: MouseEvent) {
+    this.table.getColumn('__rowLabel')?.getToggleSortingHandler()?.(event);
   }
 
   getGroupLeafSort(groupId: string): false | 'asc' | 'desc' {
