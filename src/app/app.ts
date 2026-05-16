@@ -4,6 +4,8 @@ import { ALL_FIELDS, SALES_DATA } from './data/sales-data';
 import { PivotTableComponent } from './components/pivot-table/pivot-table.component';
 import { PivotFieldConfigComponent } from './components/pivot-field-config/pivot-field-config.component';
 
+const FIELD_LABEL = new Map(ALL_FIELDS.map(field => [field.id, field.label]));
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -30,6 +32,8 @@ import { PivotFieldConfigComponent } from './components/pivot-field-config/pivot
         <section class="flex-1 overflow-hidden p-3 flex flex-col">
           <div class="mb-2 flex items-center gap-2">
             <span class="text-xs text-gray-500">
+              Records: <strong>{{ salesData.length.toLocaleString() }}</strong>
+              &nbsp;|&nbsp;
               Rows: <strong>{{ rowLabel() }}</strong>
               &nbsp;|&nbsp; Columns: <strong>{{ colLabel() }}</strong>
               &nbsp;|&nbsp; Values: <strong>{{ valueLabel() }}</strong>
@@ -59,21 +63,21 @@ export class App {
   rowLabel() {
     const cfg = this.pivotConfig();
     return cfg.rowFields.length > 0
-      ? cfg.rowFields.map(f => ALL_FIELDS.find(fd => fd.id === f)?.label ?? f).join(', ')
+      ? cfg.rowFields.map(f => FIELD_LABEL.get(f) ?? f).join(', ')
       : '(none)';
   }
 
   colLabel() {
     const cfg = this.pivotConfig();
     return cfg.columnFields.length > 0
-      ? cfg.columnFields.map(f => ALL_FIELDS.find(fd => fd.id === f)?.label ?? f).join(' > ')
+      ? cfg.columnFields.map(f => FIELD_LABEL.get(f) ?? f).join(' > ')
       : '(none)';
   }
 
   valueLabel() {
     const cfg = this.pivotConfig();
     return cfg.valueFields.length > 0
-      ? cfg.valueFields.map(v => `${v.aggFn}(${ALL_FIELDS.find(f => f.id === v.fieldId)?.label ?? v.fieldId})`).join(', ')
+      ? cfg.valueFields.map(v => `${v.aggFn}(${FIELD_LABEL.get(v.fieldId) ?? v.fieldId})`).join(', ')
       : '(none)';
   }
 }

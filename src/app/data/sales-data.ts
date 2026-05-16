@@ -6,6 +6,9 @@ export const ALL_FIELDS: FieldDef[] = [
   { id: 'channel',  label: 'Channel',  type: 'dimension' },
   { id: 'product',  label: 'Product',  type: 'dimension' },
   { id: 'month',    label: 'Month',    type: 'dimension' },
+  { id: 'segment',  label: 'Segment',  type: 'dimension' },
+  { id: 'customer', label: 'Customer', type: 'dimension' },
+  { id: 'salesRep', label: 'Sales Rep', type: 'dimension' },
   { id: 'sales',    label: 'Sales',    type: 'measure'   },
   { id: 'cost',     label: 'Cost',     type: 'measure'   },
   { id: 'profit',   label: 'Profit',   type: 'measure'   },
@@ -13,7 +16,7 @@ export const ALL_FIELDS: FieldDef[] = [
 ];
 
 // region × category × channel × month (4×3×3×6 = 216 combinations, ~180 records)
-export const SALES_DATA: SaleRecord[] = [
+const BASE_SALES_DATA: SaleRecord[] = [
   // === East / Electronics ===
   { region:'East', category:'Electronics', channel:'Online',  product:'Laptop', month:'Jan', sales:1200, cost:800,  profit:400, quantity:3  },
   { region:'East', category:'Electronics', channel:'Online',  product:'Phone',  month:'Jan', sales:800,  cost:520,  profit:280, quantity:5  },
@@ -139,3 +142,36 @@ export const SALES_DATA: SaleRecord[] = [
   { region:'South', category:'Food', channel:'Retail',   product:'Coffee', month:'May', sales:180, cost:90, profit:90,  quantity:21 },
   { region:'South', category:'Food', channel:'Online',   product:'Coffee', month:'Jun', sales:170, cost:85, profit:85,  quantity:20 },
 ];
+
+const REGIONS = ['East', 'West', 'North', 'South', 'Central', 'International'];
+const CATEGORIES = ['Electronics', 'Clothing', 'Food', 'Home', 'Sports', 'Beauty'];
+const CHANNELS = ['Online', 'Retail', 'Wholesale', 'Marketplace'];
+const PRODUCTS = ['Laptop', 'Phone', 'Tablet', 'Jacket', 'Shoes', 'Coffee', 'Tea', 'Desk', 'Bike', 'Serum'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const SEGMENTS = ['Consumer', 'Corporate', 'Enterprise', 'SMB'];
+const SALES_REPS = Array.from({ length: 48 }, (_, i) => `Rep ${String(i + 1).padStart(2, '0')}`);
+const CUSTOMERS = Array.from({ length: 750 }, (_, i) => `Customer ${String(i + 1).padStart(4, '0')}`);
+
+function generateLargeSalesData(count = 25000): SaleRecord[] {
+  const records: SaleRecord[] = [];
+  for (let i = 0; i < count; i++) {
+    const region = REGIONS[i % REGIONS.length];
+    const category = CATEGORIES[Math.floor(i / 3) % CATEGORIES.length];
+    const channel = CHANNELS[Math.floor(i / 7) % CHANNELS.length];
+    const product = PRODUCTS[Math.floor(i / 11) % PRODUCTS.length];
+    const month = MONTHS[Math.floor(i / 13) % MONTHS.length];
+    const segment = SEGMENTS[Math.floor(i / 17) % SEGMENTS.length];
+    const customer = CUSTOMERS[(i * 37) % CUSTOMERS.length];
+    const salesRep = SALES_REPS[(i * 19) % SALES_REPS.length];
+    const quantity = 1 + ((i * 5) % 24);
+    const base = 80 + ((i * 97) % 2400);
+    const sales = base + quantity * 12;
+    const cost = Math.round(sales * (0.52 + ((i % 19) / 100)));
+    const profit = sales - cost;
+
+    records.push({ region, category, product, channel, month, segment, customer, salesRep, sales, cost, profit, quantity });
+  }
+  return records;
+}
+
+export const SALES_DATA: SaleRecord[] = [...BASE_SALES_DATA, ...generateLargeSalesData()];

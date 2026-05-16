@@ -4,6 +4,9 @@ export interface SaleRecord {
   product: string;
   channel: string;
   month: string;
+  segment?: string;
+  customer?: string;
+  salesRep?: string;
   sales: number;
   quantity: number;
   profit: number;

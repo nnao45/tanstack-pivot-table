@@ -1,10 +1,13 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
+  effect,
   computed,
   inject,
   input,
   signal,
+  viewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
@@ -21,15 +24,20 @@ import {
   SortingState,
   ColumnSizingState,
 } from '@tanstack/angular-table';
+import { defaultRangeExtractor, injectVirtualizer, Range } from '@tanstack/angular-virtual';
 import { ColumnNode, PivotConfig, PivotRow, SaleRecord } from '../../types';
 import { PivotDataService, makeCellKey, makeRowTotalKey } from '../../services/pivot-data.service';
 import { ALL_FIELDS } from '../../data/sales-data';
 
 const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 const columnHelper = createColumnHelper<PivotRow>();
+const FIELD_LABEL = new Map(ALL_FIELDS.map(field => [field.id, field.label]));
 
 const ROW_LABEL_SIZE = 200;
 const VALUE_COL_SIZE = 90;
+const HEADER_ROW_HEIGHT = 34;
+const ROW_HEIGHT = 29;
+const GRAND_TOTAL_HEIGHT = 30;
 
 @Component({
   selector: 'app-pivot-table',
@@ -42,160 +50,185 @@ const VALUE_COL_SIZE = 90;
         左のパネルからRows・Valuesにフィールドを追加してください
       </div>
     } @else {
-      <div class="flex flex-col h-full">
-      <div class="overflow-auto flex-1">
-        <table class="border-collapse text-xs" style="width: max-content; min-width: 100%">
-          <thead>
-            @for (headerGroup of table.getHeaderGroups(); track headerGroup.id) {
-              @if (!isHeaderGroupAllEmpty(headerGroup.headers)) {
-              <tr>
-                @for (header of headerGroup.headers; track header.id) {
-                  @let expandNode = getExpandableNode(header.column.id);
-                  @let isPinned = header.column.getIsPinned();
-                  <th
-                    [attr.colSpan]="header.colSpan"
-                    [style.width.px]="header.getSize()"
-                    [style.min-width.px]="header.getSize()"
-                    [style.position]="isPinned ? 'sticky' : 'relative'"
-                    [style.left.px]="isPinned === 'left' ? header.column.getStart('left') : null"
-                    [style.z-index]="isPinned ? 30 : 10"
-                    [class]="getHeaderClass(header.id, headerGroup.depth, isPinned !== false)"
-                    class="border border-gray-300 px-2 py-2 whitespace-nowrap"
-                    [class.cursor-pointer]="expandNode !== null"
-                    (click)="expandNode && toggleColExpand(expandNode.key)"
-                  >
-                    @if (!header.isPlaceholder) {
-                      <div class="flex items-center gap-1 overflow-hidden"
-                           [class.justify-center]="headerGroup.depth === 0 && header.id !== '__rowLabel' && header.id !== '__rowLabelGroup'"
-                           [class.justify-start]="header.id === '__rowLabel' || header.id === '__rowLabelGroup'"
-                           [class.justify-end]="headerGroup.depth > 0 && header.id !== '__rowLabel'">
-                        <!-- Column expand toggle -->
-                        @if (expandNode) {
-                          <span class="text-white/70 text-xs flex-none">
-                            {{ columnExpanded().has(expandNode.key) ? '▾' : '▸' }}
-                          </span>
-                        }
-                        <!-- Header text -->
-                        <span class="truncate">
-                          <ng-container *flexRender="header.column.columnDef.header; props: header.getContext(); let value">
-                            {{ value }}
-                          </ng-container>
-                        </span>
-                        <!-- Row label sort (needsGroupWrapper=true: ⇅ on __rowLabelGroup) -->
-                        @if (header.column.id === '__rowLabelGroup') {
-                          <span
-                            (click)="$event.stopPropagation(); toggleRowLabelSort($event)"
-                            class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
-                          >
-                            @switch (rowLabelSortState()) {
-                              @case ('asc')  { <span>▲</span> }
-                              @case ('desc') { <span>▼</span> }
-                              @default       { <span>⇅</span> }
-                            }
-                          </span>
-                        }
-                        <!-- Row sort: only on collapsed single-value expandable columns & Row Total -->
-                        @if (sortableGroupMap().has(header.column.id)) {
-                          <span
-                            (click)="$event.stopPropagation(); toggleGroupLeafSort(header.column.id, $event)"
-                            class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
-                          >
-                            @switch (getGroupLeafSort(header.column.id)) {
-                              @case ('asc')  { <span>▲</span> }
-                              @case ('desc') { <span>▼</span> }
-                              @default       { <span>⇅</span> }
-                            }
-                          </span>
-                        }
-                        <!-- Sort icon (leaf data columns, skip hidden sub-cols of collapsed groups) -->
-                        @if (header.column.getCanSort() && !sortableLeafSet().has(header.column.id)) {
-                          <span
-                            (click)="$event.stopPropagation(); header.column.getToggleSortingHandler()?.($event)"
-                            class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
-                          >
-                            @switch (header.column.getIsSorted()) {
-                              @case ('asc')  { <span>▲</span> }
-                              @case ('desc') { <span>▼</span> }
-                              @default       { <span>⇅</span> }
-                            }
-                          </span>
-                        }
-                      </div>
-                    }
-                    <!-- Resize handle -->
-                    @if (header.column.getCanResize()) {
-                      <div
-                        (mousedown)="header.getResizeHandler()($event)"
-                        (touchstart)="header.getResizeHandler()($event)"
-                        class="absolute right-0 top-0 h-full w-1.5 cursor-col-resize select-none z-10
-                               opacity-0 hover:opacity-100"
-                        [class.opacity-100]="header.column.getIsResizing()"
-                        [class.bg-white]="header.column.getIsResizing()"
-                        [class.bg-white\/40]="!header.column.getIsResizing()"
-                      ></div>
-                    }
-                  </th>
-                }
-              </tr>
-              }
-            }
-          </thead>
-          <tbody>
-            @for (row of table.getRowModel().rows; track row.id) {
-              <tr [class]="getRowClass(row)">
-                @for (cell of row.getVisibleCells(); track cell.id) {
-                  @let isPinnedCell = cell.column.getIsPinned();
-                  <td
-                    [style.width.px]="cell.column.getSize()"
-                    [style.min-width.px]="cell.column.getSize()"
-                    [style.position]="isPinnedCell ? 'sticky' : ''"
-                    [style.left.px]="isPinnedCell === 'left' ? cell.column.getStart('left') : null"
-                    [style.z-index]="isPinnedCell ? 2 : ''"
-                    [class]="getCellClass(cell.column.id, row, isPinnedCell !== false)"
-                    class="border border-gray-200 px-2 py-1.5 whitespace-nowrap overflow-hidden"
-                  >
-                    @if (cell.column.id === '__rowLabel') {
-                      <div class="flex items-center gap-1" [style.padding-left.px]="row.depth * 20">
-                        @if (row.getCanExpand()) {
-                          <button
-                            (click)="row.getToggleExpandedHandler()()"
-                            class="text-gray-500 hover:text-blue-600 w-4 text-center flex-none"
-                          >{{ row.getIsExpanded() ? '▾' : '▸' }}</button>
-                        } @else {
-                          <span class="w-4 flex-none"></span>
-                        }
-                        <span class="truncate flex-1">{{ row.original.__label }}</span>
-                        @let rk = row.original.__rowKeys.join('|||');
-                        <span
-                          class="flex-none cursor-pointer select-none text-xs px-0.5 text-gray-300 hover:text-blue-500"
-                          [class.text-blue-500]="isActiveColumnSortRow(rk)"
-                          (click)="$event.stopPropagation(); toggleColumnSortByRow(rk)"
-                        >
-                          @if (isActiveColumnSortRow(rk)) {
-                            {{ columnSortByRow()!.direction === 'desc' ? '↓' : '↑' }}
-                          } @else { ↕ }
-                        </span>
-                      </div>
-                    } @else {
-                      <span [class]="isNullCell(cell.getValue()) ? 'text-gray-300' : ''">
-                        {{ formatCell(cell.getValue()) }}
+      <div #scrollHost class="overflow-auto h-full relative text-xs bg-white">
+        <div
+          class="relative"
+          [style.width.px]="columnVirtualizer.getTotalSize()"
+          [style.height.px]="virtualContentHeight()"
+          [style.min-width]="'100%'"
+        >
+          <div
+            class="sticky top-0 left-0"
+            [style.height.px]="bodyTop"
+            [style.width.px]="columnVirtualizer.getTotalSize()"
+            [style.z-index]="50"
+          >
+            @for (headerGroup of visibleHeaderGroups(); track headerGroup.id; let headerDepth = $index) {
+              @for (header of visibleHeaders(headerGroup.headers); track header.id) {
+              @let expandNode = getExpandableNode(header.column.id);
+              @let isPinned = header.column.getIsPinned();
+              <div
+                [style.top.px]="headerDepth * headerRowHeight"
+                [style.left.px]="isPinned === 'left' ? header.column.getStart('left') : header.getStart()"
+                [style.width.px]="header.getSize()"
+                [style.height.px]="headerRowHeight"
+                [style.position]="isPinned ? 'sticky' : 'absolute'"
+                [style.z-index]="isPinned ? 50 : 40"
+                [ngClass]="getHeaderClass(header.id, headerGroup.depth, isPinned !== false)"
+                class="box-border border border-gray-300 px-2 py-2 whitespace-nowrap overflow-hidden"
+                [class.cursor-pointer]="expandNode !== null"
+                (click)="expandNode && toggleColExpand(expandNode.key)"
+              >
+                @if (!header.isPlaceholder) {
+                  <div class="flex items-center gap-1 overflow-hidden"
+                       [class.justify-center]="headerGroup.depth === 0 && header.id !== '__rowLabel' && header.id !== '__rowLabelGroup'"
+                       [class.justify-start]="header.id === '__rowLabel' || header.id === '__rowLabelGroup'"
+                       [class.justify-end]="headerGroup.depth > 0 && header.id !== '__rowLabel'">
+                    @if (expandNode) {
+                      <span class="text-white/70 text-xs flex-none">
+                        {{ columnExpanded().has(expandNode.key) ? '▾' : '▸' }}
                       </span>
                     }
-                  </td>
+                    <span class="truncate">
+                      <ng-container *flexRender="header.column.columnDef.header; props: header.getContext(); let value">
+                        {{ value }}
+                      </ng-container>
+                    </span>
+                    @if (header.column.id === '__rowLabelGroup') {
+                      <span
+                        (click)="$event.stopPropagation(); toggleRowLabelSort($event)"
+                        class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
+                      >
+                        @switch (rowLabelSortState()) {
+                          @case ('asc')  { <span>▲</span> }
+                          @case ('desc') { <span>▼</span> }
+                          @default       { <span>⇅</span> }
+                        }
+                      </span>
+                    }
+                    @if (sortableGroupMap().has(header.column.id)) {
+                      <span
+                        (click)="$event.stopPropagation(); toggleGroupLeafSort(header.column.id, $event)"
+                        class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
+                      >
+                        @switch (getGroupLeafSort(header.column.id)) {
+                          @case ('asc')  { <span>▲</span> }
+                          @case ('desc') { <span>▼</span> }
+                          @default       { <span>⇅</span> }
+                        }
+                      </span>
+                    }
+                    @if (header.column.getCanSort() && !sortableLeafSet().has(header.column.id)) {
+                      <span
+                        (click)="$event.stopPropagation(); header.column.getToggleSortingHandler()?.($event)"
+                        class="ml-auto flex-none cursor-pointer text-white/50 hover:text-white select-none"
+                      >
+                        @switch (header.column.getIsSorted()) {
+                          @case ('asc')  { <span>▲</span> }
+                          @case ('desc') { <span>▼</span> }
+                          @default       { <span>⇅</span> }
+                        }
+                      </span>
+                    }
+                  </div>
                 }
-              </tr>
+                @if (header.column.getCanResize()) {
+                  <div
+                    (mousedown)="header.getResizeHandler()($event)"
+                    (touchstart)="header.getResizeHandler()($event)"
+                    class="absolute right-0 top-0 h-full w-1.5 cursor-col-resize select-none z-10 opacity-0 hover:opacity-100"
+                    [class.opacity-100]="header.column.getIsResizing()"
+                    [class.bg-white]="header.column.getIsResizing()"
+                    [class.bg-white\/40]="!header.column.getIsResizing()"
+                  ></div>
+                }
+              </div>
+              }
             }
-            <!-- Grand Total -->
-            <tr class="bg-gray-800 text-white font-bold sticky bottom-0">
-              @for (cell of grandTotalCells(); track cell.id) {
+          </div>
+
+          @for (virtualRow of rowVirtualizer.getVirtualItems(); track virtualRow.key) {
+            @let row = rowAt(virtualRow.index);
+            @if (row) {
+              <div
+                [ngClass]="getRowClass(row)"
+                class="absolute left-0 isolate"
+                [style.top.px]="0"
+                [style.transform]="translateY(bodyTop + virtualRow.start)"
+                [style.height.px]="virtualRow.size"
+                [style.width.px]="columnVirtualizer.getTotalSize()"
+              >
+                @for (virtualCol of columnVirtualizer.getVirtualItems(); track virtualCol.key) {
+                  @let column = columnAt(virtualCol.index);
+                  @if (column) {
+                    @let isPinnedCell = column.getIsPinned();
+                    @let cellValue = rowCellValue(row, column.id);
+                    <div
+                      [style.left.px]="isPinnedCell === 'left' ? column.getStart('left') : virtualCol.start"
+                      [style.top.px]="0"
+                      [style.width.px]="virtualCol.size"
+                      [style.height.px]="virtualRow.size"
+                      [style.position]="isPinnedCell ? 'sticky' : 'absolute'"
+                      [style.z-index]="isPinnedCell ? 20 : 10"
+                      [ngClass]="getCellClass(column.id, row, isPinnedCell !== false)"
+                      class="box-border border border-gray-200 px-2 py-1.5 whitespace-nowrap overflow-hidden"
+                    >
+                      @if (column.id === '__rowLabel') {
+                        <div class="flex items-center gap-1" [style.padding-left.px]="row.depth * 20">
+                          @if (row.getCanExpand()) {
+                            <button
+                              (click)="row.getToggleExpandedHandler()()"
+                              class="text-gray-500 hover:text-blue-600 w-4 text-center flex-none"
+                            >{{ row.getIsExpanded() ? '▾' : '▸' }}</button>
+                          } @else {
+                            <span class="w-4 flex-none"></span>
+                          }
+                          <span class="truncate flex-1">{{ row.original.__label }}</span>
+                          @let rk = row.original.__rowKeys.join('|||');
+                          <span
+                            class="flex-none cursor-pointer select-none text-xs px-0.5 text-gray-300 hover:text-blue-500"
+                            [class.text-blue-500]="isActiveColumnSortRow(rk)"
+                            (click)="$event.stopPropagation(); toggleColumnSortByRow(rk)"
+                          >
+                            @if (isActiveColumnSortRow(rk)) {
+                              {{ columnSortByRow()!.direction === 'desc' ? '↓' : '↑' }}
+                            } @else { ↕ }
+                          </span>
+                        </div>
+                      } @else {
+                        <span [ngClass]="isNullCell(cellValue) ? 'text-gray-300' : ''">
+                          {{ formatCell(cellValue) }}
+                        </span>
+                      }
+                    </div>
+                  }
+                }
+              </div>
+            }
+          }
+
+          <div
+            class="bottom-0 left-0 bg-gray-800 text-white font-bold"
+            [style.position]="'sticky'"
+            [style.margin-top.px]="rowVirtualizer.getTotalSize()"
+            [style.height.px]="grandTotalHeight"
+            [style.width.px]="columnVirtualizer.getTotalSize()"
+            [style.z-index]="60"
+          >
+            @for (virtualCol of columnVirtualizer.getVirtualItems(); track virtualCol.key) {
+              @let cell = grandTotalCells()[virtualCol.index];
+              @if (cell) {
                 @let isPinnedGT = grandTotalPinned(cell.id);
-                <td
-                  [style.width.px]="grandTotalWidth(cell.id)"
-                  [style.position]="isPinnedGT ? 'sticky' : ''"
-                  [style.left.px]="isPinnedGT ? 0 : null"
-                  [style.z-index]="isPinnedGT ? 3 : ''"
-                  [class]="getGrandTotalCellClass(cell.id)"
-                  class="border border-gray-600 px-2 py-1.5 whitespace-nowrap"
+                @let grandValue = grandTotalValue(cell.id);
+                <div
+                  [style.left.px]="isPinnedGT ? 0 : virtualCol.start"
+                  [style.top.px]="0"
+                  [style.width.px]="virtualCol.size"
+                  [style.height.px]="grandTotalHeight"
+                  [style.position]="isPinnedGT ? 'sticky' : 'absolute'"
+                  [style.z-index]="isPinnedGT ? 70 : 60"
+                  [ngClass]="getGrandTotalCellClass(cell.id)"
+                  class="box-border border border-gray-600 px-2 py-1.5 whitespace-nowrap"
                 >
                   @if (cell.id === '__rowLabel') {
                     <div class="pl-4 flex items-center gap-1">
@@ -212,16 +245,15 @@ const VALUE_COL_SIZE = 90;
                       </span>
                     </div>
                   } @else {
-                    <span [class]="isNullCell(grandTotalValue(cell.id)) ? 'text-gray-500' : ''">
-                      {{ formatCell(grandTotalValue(cell.id)) }}
+                    <span [ngClass]="isNullCell(grandValue) ? 'text-gray-500' : ''">
+                      {{ formatCell(grandValue) }}
                     </span>
                   }
-                </td>
+                </div>
               }
-            </tr>
-          </tbody>
-        </table>
-      </div>
+            }
+          </div>
+        </div>
       </div>
     }
   `,
@@ -229,8 +261,17 @@ const VALUE_COL_SIZE = 90;
 export class PivotTableComponent {
   data = input.required<SaleRecord[]>();
   config = input.required<PivotConfig>();
+  scrollHost = viewChild<ElementRef<HTMLDivElement>>('scrollHost');
 
   private pivotService = inject(PivotDataService);
+  private readonly debugPivot = typeof location !== 'undefined' && location.search.includes('debugPivot=1');
+  private lastDebugSignature = '';
+  readonly headerRowHeight = HEADER_ROW_HEIGHT;
+  readonly grandTotalHeight = GRAND_TOTAL_HEIGHT;
+
+  get bodyTop(): number {
+    return this.visibleHeaderGroups().length * this.headerRowHeight;
+  }
 
   pivotData = computed(() => this.pivotService.compute(this.data(), this.config()));
 
@@ -306,7 +347,7 @@ export class PivotTableComponent {
     const cols: ColumnDef<PivotRow>[] = [];
 
     // Row label (pinned left)
-    const rowHeader = cfg.rowFields.map(f => ALL_FIELDS.find(fd => fd.id === f)?.label ?? f).join(' / ');
+    const rowHeader = cfg.rowFields.map(f => FIELD_LABEL.get(f) ?? f).join(' / ');
     const rowLabelAccessorDef = (header: string) => columnHelper.accessor(
       (row: PivotRow) => row.__label,
       {
@@ -499,7 +540,7 @@ export class PivotTableComponent {
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
-    columnResizeMode: 'onChange' as const,
+    columnResizeMode: 'onEnd' as const,
     state: {
       expanded: this.expanded(),
       sorting: this.sorting(),
@@ -518,7 +559,114 @@ export class PivotTableComponent {
     autoResetExpanded: false,
   }));
 
+  visibleHeaderGroups = computed(() =>
+    this.table.getHeaderGroups().filter(group => !this.isHeaderGroupAllEmpty(group.headers))
+  );
+  leafColumns = computed(() => this.table.getVisibleLeafColumns());
+  rowModelRows = computed(() => this.table.getRowModel().rows);
   grandTotalCells = computed(() => this.table.getAllLeafColumns().map(col => ({ id: col.id })));
+
+  rowVirtualizer = injectVirtualizer<HTMLDivElement, HTMLDivElement>(() => ({
+    scrollElement: this.scrollHost(),
+    count: this.rowModelRows().length,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+  }));
+
+  columnVirtualizer = injectVirtualizer<HTMLDivElement, HTMLDivElement>(() => ({
+    scrollElement: this.scrollHost(),
+    horizontal: true,
+    count: this.leafColumns().length,
+    estimateSize: index => this.leafColumns()[index]?.getSize() ?? VALUE_COL_SIZE,
+    overscan: 4,
+    rangeExtractor: range => pinFirstColumn(range),
+  }));
+
+  debugSnapshot = effect(() => {
+    if (!this.debugPivot) return;
+
+    const rows = this.rowModelRows();
+    const cols = this.leafColumns();
+    const virtualRows = this.rowVirtualizer.getVirtualItems();
+    const virtualCols = this.columnVirtualizer.getVirtualItems();
+    const firstRow = virtualRows.length > 0 ? rows[virtualRows[0].index] : undefined;
+    const sample = firstRow ? virtualCols.slice(0, 8).map(virtualCol => {
+      const col = cols[virtualCol.index];
+      return {
+        virtualIndex: virtualCol.index,
+        start: virtualCol.start,
+        size: virtualCol.size,
+        columnId: col?.id,
+        value: col ? this.rowCellValue(firstRow, col.id) : undefined,
+      };
+    }) : [];
+    const signature = JSON.stringify({
+      rowCount: rows.length,
+      colCount: cols.length,
+      firstVirtualRow: virtualRows[0]?.index,
+      firstRowLabel: firstRow?.original.__label,
+      virtualCols: virtualCols.slice(0, 8).map(col => col.index),
+      sample,
+    });
+
+    if (signature === this.lastDebugSignature) return;
+    this.lastDebugSignature = signature;
+    console.table(sample);
+    console.log('[pivot-debug]', JSON.parse(signature), {
+      firstRowOriginalKeys: firstRow ? Object.keys(firstRow.original).slice(0, 30) : [],
+      rowModelFirstRows: rows.slice(0, 5).map(row => ({
+        id: row.id,
+        label: row.original.__label,
+        depth: row.depth,
+        keys: row.original.__rowKeys,
+      })),
+      leafColumns: cols.slice(0, 12).map((col, index) => ({
+        index,
+        id: col.id,
+        size: col.getSize(),
+        start: col.getStart(),
+        pinned: col.getIsPinned(),
+      })),
+    });
+  });
+
+  virtualContentHeight(): number {
+    return this.bodyTop + this.rowVirtualizer.getTotalSize() + this.grandTotalHeight;
+  }
+
+  translateY(value: number): string {
+    return `translateY(${value}px)`;
+  }
+
+  rowAt(index: number): Row<PivotRow> | undefined {
+    return this.rowModelRows()[index];
+  }
+
+  columnAt(index: number) {
+    return this.leafColumns()[index];
+  }
+
+  rowCellValue(row: Row<PivotRow>, columnId: string): unknown {
+    if (columnId === '__rowLabel') return row.original.__label;
+    if (columnId.startsWith('subtotal__')) {
+      return row.original[columnId.replace('subtotal__', '__cell__')];
+    }
+    return row.original[columnId];
+  }
+
+  visibleHeaders(headers: Header<PivotRow, unknown>[]): Header<PivotRow, unknown>[] {
+    const virtualItems = this.columnVirtualizer.getVirtualItems();
+    if (virtualItems.length === 0) return [];
+    const first = virtualItems[0].start;
+    const lastItem = virtualItems[virtualItems.length - 1];
+    const last = lastItem.start + lastItem.size;
+    return headers.filter(header => {
+      if (header.isPlaceholder) return false;
+      const start = header.getStart();
+      const end = start + header.getSize();
+      return end >= first && start <= last;
+    });
+  }
 
   grandTotalValue(colId: string): unknown {
     if (colId.startsWith('subtotal__')) {
@@ -597,8 +745,8 @@ export class PivotTableComponent {
     const base = 'text-right tabular-nums';
     if (colId.startsWith('__rowTotal')) return `${base} bg-blue-50 border-l-2 border-blue-200`;
     if (colId.startsWith('subtotal__')) return `${base} bg-amber-50 border-l border-amber-200`;
-    if (row.original.__isGroup) return `${base} text-gray-700`;
-    return base;
+    if (row.original.__isGroup) return `${base} bg-gray-100 text-gray-700`;
+    return `${base} bg-white`;
   }
 
   getGrandTotalCellClass(colId: string): string {
@@ -625,6 +773,11 @@ export class PivotTableComponent {
   }
 
   private aggLabel(vf: { fieldId: string; aggFn: string }): string {
-    return `${vf.aggFn}(${ALL_FIELDS.find(f => f.id === vf.fieldId)?.label ?? vf.fieldId})`;
+    return `${vf.aggFn}(${FIELD_LABEL.get(vf.fieldId) ?? vf.fieldId})`;
   }
+}
+
+function pinFirstColumn(range: Range): number[] {
+  const indexes = defaultRangeExtractor(range);
+  return indexes[0] === 0 ? indexes : [0, ...indexes];
 }
