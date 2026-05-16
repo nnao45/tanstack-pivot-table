@@ -15,14 +15,21 @@ export function makeRowTotalKey(fieldId: string, aggFn: AggFnName): string {
 }
 
 function aggregate(records: SaleRecord[], fieldId: string, fn: AggFnName): number {
-  const values = records.map(r => Number(r[fieldId as keyof SaleRecord]));
-  if (values.length === 0) return 0;
+  if (fn === 'count') return records.length;
+  if (records.length === 0) return 0;
+  const key = fieldId as keyof SaleRecord;
+  let sum = 0, min = Infinity, max = -Infinity;
+  for (const r of records) {
+    const v = Number(r[key]);
+    sum += v;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
   switch (fn) {
-    case 'sum':   return values.reduce((a, b) => a + b, 0);
-    case 'count': return values.length;
-    case 'avg':   return values.reduce((a, b) => a + b, 0) / values.length;
-    case 'min':   return Math.min(...values);
-    case 'max':   return Math.max(...values);
+    case 'sum': return sum;
+    case 'avg': return sum / records.length;
+    case 'min': return min;
+    case 'max': return max;
   }
 }
 
@@ -41,12 +48,18 @@ function buildColumnTree(
 ): ColumnNode[] {
   if (fields.length === 0) return [];
   const [field, ...rest] = fields;
-  const uniqueVals = [...new Set(data.map(r => String(r[field as keyof SaleRecord])))];
-  uniqueVals.sort(columnSortFn(field));
+  const fkey = field as keyof SaleRecord;
+  const grouped = new Map<string, SaleRecord[]>();
+  for (const r of data) {
+    const val = String(r[fkey]);
+    const bucket = grouped.get(val);
+    if (bucket) bucket.push(r);
+    else grouped.set(val, [r]);
+  }
+  const uniqueVals = [...grouped.keys()].sort(columnSortFn(field));
   return uniqueVals.map(val => {
     const key = parentKey ? `${parentKey}${SEP}${val}` : val;
-    const filtered = data.filter(r => String(r[field as keyof SaleRecord]) === val);
-    return { value: val, field, key, depth, children: buildColumnTree(filtered, rest, depth + 1, key) };
+    return { value: val, field, key, depth, children: buildColumnTree(grouped.get(val)!, rest, depth + 1, key) };
   });
 }
 
@@ -78,10 +91,13 @@ export class PivotDataService {
     // Step 2: build cell buckets at ALL column depths
     // key = rowGroupKey__COL__colKey
     const cellBuckets = new Map<string, SaleRecord[]>();
+    const rowTotalBuckets = new Map<string, SaleRecord[]>();
+    const colBuckets = new Map<string, SaleRecord[]>();
 
     for (const record of rawData) {
       for (let rowDepth = 1; rowDepth <= rowFields.length; rowDepth++) {
         const rowKey = rowFields.slice(0, rowDepth).map(f => String(record[f as keyof SaleRecord])).join(SEP);
+        addToBucket(rowTotalBuckets, rowKey, record);
 
         if (columnFields.length === 0) {
           addToBucket(cellBuckets, `${rowKey}${COL_SEP}${TOTAL_KEY}`, record);
@@ -92,6 +108,11 @@ export class PivotDataService {
             addToBucket(cellBuckets, `${rowKey}${COL_SEP}${colKey}`, record);
           }
         }
+      }
+      // Column-only buckets for grand total (counted once per record, outside rowDepth loop)
+      for (let colDepth = 1; colDepth <= columnFields.length; colDepth++) {
+        const colKey = columnFields.slice(0, colDepth).map(f => String(record[f as keyof SaleRecord])).join(SEP);
+        addToBucket(colBuckets, colKey, record);
       }
     }
 
@@ -125,10 +146,8 @@ export class PivotDataService {
         }
       }
 
-      // Row total: filter rawData directly to avoid double counting
-      const rowTotalRecs = rawData.filter(r =>
-        parts.every((val, i) => String(r[rowFields[i] as keyof SaleRecord]) === val)
-      );
+      // Row total: use pre-built bucket (no rawData re-scan)
+      const rowTotalRecs = rowTotalBuckets.get(rowKey) ?? [];
       for (const vf of valueFields) {
         row[makeRowTotalKey(vf.fieldId, vf.aggFn)] = aggregate(rowTotalRecs, vf.fieldId, vf.aggFn);
       }
@@ -136,13 +155,10 @@ export class PivotDataService {
       return row;
     });
 
-    // Step 5: grand total
+    // Step 5: grand total (use pre-built colBuckets, no rawData re-scan)
     const grandTotal: PivotRow = emptyRow('Grand Total', -1);
     for (const colKey of allColKeys) {
-      const colParts = colKey === TOTAL_KEY ? [] : colKey.split(SEP);
-      const recsForCol = colKey === TOTAL_KEY
-        ? rawData
-        : rawData.filter(r => colParts.every((val, i) => String(r[columnFields[i] as keyof SaleRecord]) === val));
+      const recsForCol = colKey === TOTAL_KEY ? rawData : (colBuckets.get(colKey) ?? []);
       for (const vf of valueFields) {
         grandTotal[makeCellKey(colKey, vf.fieldId, vf.aggFn)] = aggregate(recsForCol, vf.fieldId, vf.aggFn);
       }

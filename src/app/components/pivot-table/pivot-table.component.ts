@@ -463,14 +463,19 @@ export class PivotTableComponent {
     }) as ColumnDef<PivotRow>];
   }
 
-  // Build a sortable, resizable value accessor column
+  private readonly columnDefCache = new Map<string, ColumnDef<PivotRow>>();
+
+  // Build a sortable, resizable value accessor column (cached by stable key)
   private makeValueAccessor(
     id: string,
     accessorFn: (row: PivotRow) => unknown,
     header: string,
     enableSorting: boolean
   ): ColumnDef<PivotRow> {
-    return columnHelper.accessor(accessorFn as (row: PivotRow) => number | null, {
+    const cacheKey = `${id}__${header}__${enableSorting}`;
+    const cached = this.columnDefCache.get(cacheKey);
+    if (cached) return cached;
+    const def = columnHelper.accessor(accessorFn as (row: PivotRow) => number | null, {
       id,
       header,
       size: VALUE_COL_SIZE,
@@ -482,6 +487,8 @@ export class PivotTableComponent {
         return va - vb;
       },
     }) as ColumnDef<PivotRow>;
+    this.columnDefCache.set(cacheKey, def);
+    return def;
   }
 
   table = createAngularTable(() => ({
@@ -601,9 +608,15 @@ export class PivotTableComponent {
     return '';
   }
 
+  private readonly formatCache = new Map<number, string>();
+
   formatCell(val: unknown): string {
     if (val === null || val === undefined) return '—';
-    if (typeof val === 'number') return fmt.format(val);
+    if (typeof val === 'number') {
+      let s = this.formatCache.get(val);
+      if (s === undefined) { s = fmt.format(val); this.formatCache.set(val, s); }
+      return s;
+    }
     return String(val);
   }
 
