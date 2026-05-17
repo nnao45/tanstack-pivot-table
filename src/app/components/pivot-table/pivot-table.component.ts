@@ -247,7 +247,8 @@ export class PivotTableComponent {
       rowLabelCol,
       ...this.buildColDefs(
         this.sortTopLevelColumnNodes(pd.columnNodes),
-        this.hasAnyExpandedColumn(pd.columnNodes)
+        this.hasAnyExpandedColumn(pd.columnNodes),
+        0
       ),
       ...(cfg.columnFields.length > 0 ? [this.buildRowTotalDef()] : []),
     ];
@@ -293,7 +294,11 @@ export class PivotTableComponent {
     </div>`;
   }
 
-  private buildColDefs(nodes: ColumnNode[], alignCollapsedParentsToTop: boolean): (ColDef | ColGroupDef)[] {
+  private buildColDefs(
+    nodes: ColumnNode[],
+    alignCollapsedParentsToTop: boolean,
+    depth: number
+  ): (ColDef | ColGroupDef)[] {
     const cfg = this.config();
     return nodes.map(node => {
       const groupId = makeColumnGroupId(node.key);
@@ -303,20 +308,10 @@ export class PivotTableComponent {
       // 展開中: ColGroupDef + PivotExpandedGroupHeaderComponent + 子列 + Subtotal
       // 子列はソートしない: ソートは最上位ノード間のみ適用し親グループの依存を維持
       if (isExpanded) {
-        const subCols = this.buildColDefs(node.children, alignCollapsedParentsToTop);
+        const subCols = this.buildColDefs(node.children, alignCollapsedParentsToTop, depth + 1);
         if (cfg.valueFields.length === 1) {
           const vf = cfg.valueFields[0];
-          subCols.push({
-            ...this.makeLeafColDef(
-              makeCellKey(node.key, vf.fieldId, vf.aggFn),
-              'Subtotal',
-              makeSubtotalColId(node.key, vf.fieldId, vf.aggFn)
-            ),
-            cellStyle: (params): CellStyle => {
-              if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
-              return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#fffbeb', borderLeft: '1px solid #fde68a' };
-            },
-          });
+          subCols.push(this.buildSubtotalDef(node.key, vf, subCols.some(def => this.isColGroupDef(def))));
         } else {
           subCols.push({
             headerName: 'Subtotal',
@@ -361,7 +356,7 @@ export class PivotTableComponent {
 
       // 子あり・折畳み: 上段に親ヘッダー、下段に空の実データ列を置く
       const vf = cfg.valueFields[0];
-      if (!alignCollapsedParentsToTop) {
+      if (!alignCollapsedParentsToTop || depth > 0) {
         return {
           colId: groupId,
           field: makeCellKey(node.key, vf.fieldId, vf.aggFn),
@@ -403,6 +398,37 @@ export class PivotTableComponent {
         }],
       } as ColGroupDef;
     });
+  }
+
+  private buildSubtotalDef(
+    nodeKey: string,
+    vf: { fieldId: string; aggFn: 'sum' | 'count' | 'avg' | 'min' | 'max' },
+    wrapInGroup: boolean
+  ): ColDef | ColGroupDef {
+    const leaf = {
+      ...this.makeLeafColDef(
+        makeCellKey(nodeKey, vf.fieldId, vf.aggFn),
+        wrapInGroup ? '' : 'Subtotal',
+        makeSubtotalColId(nodeKey, vf.fieldId, vf.aggFn)
+      ),
+      ...(wrapInGroup ? { headerComponent: PivotEmptyHeaderComponent } : {}),
+      cellStyle: (params: { node: { rowPinned: string | null | undefined } }): CellStyle => {
+        if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
+        return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#fffbeb', borderLeft: '1px solid #fde68a' };
+      },
+    };
+
+    if (!wrapInGroup) return leaf;
+
+    return {
+      headerName: 'Subtotal',
+      marryChildren: true,
+      children: [leaf],
+    } as ColGroupDef;
+  }
+
+  private isColGroupDef(def: ColDef | ColGroupDef): def is ColGroupDef {
+    return Array.isArray((def as ColGroupDef).children);
   }
 
   private hasAnyExpandedColumn(nodes: ColumnNode[]): boolean {
