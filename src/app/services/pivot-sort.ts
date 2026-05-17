@@ -2,6 +2,28 @@ import { AggFnName, ColumnNode, PivotRow } from '../types';
 import { makeCellKey } from './pivot-data.service';
 
 export type PivotSortDirection = 'asc' | 'desc';
+export const COLUMN_GROUP_PREFIX = 'colGroup__';
+
+export function makeColumnGroupId(nodeKey: string): string {
+  return `${COLUMN_GROUP_PREFIX}${nodeKey}`;
+}
+
+export function makeSubtotalColId(nodeKey: string, fieldId: string, aggFn: AggFnName): string {
+  return `subtotal__${nodeKey}__${fieldId}__${aggFn}`;
+}
+
+export function getColumnHeaderSortTarget(
+  groupKey: string,
+  isExpanded: boolean,
+  valueField: { fieldId: string; aggFn: AggFnName } | undefined
+): string | null {
+  if (!valueField) return null;
+  if (!isExpanded) return groupKey;
+  const nodeKey = groupKey.startsWith(COLUMN_GROUP_PREFIX)
+    ? groupKey.slice(COLUMN_GROUP_PREFIX.length)
+    : groupKey;
+  return makeSubtotalColId(nodeKey, valueField.fieldId, valueField.aggFn);
+}
 
 export function sortTopLevelColumnNodesByRow(
   nodes: readonly ColumnNode[],

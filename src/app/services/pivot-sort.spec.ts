@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { PivotConfig, SaleRecord } from '../types';
 import { PivotDataService, makeCellKey } from './pivot-data.service';
-import { preservePivotRowHierarchy, sortTopLevelColumnNodesByRow } from './pivot-sort';
+import {
+  getColumnHeaderSortTarget,
+  makeColumnGroupId,
+  makeSubtotalColId,
+  preservePivotRowHierarchy,
+  sortTopLevelColumnNodesByRow,
+} from './pivot-sort';
 
 const DATA: SaleRecord[] = [
   // Channel: Online,  Month: Jan
@@ -241,5 +247,33 @@ describe('row sort hierarchy preservation', () => {
       'West|||Software',
       'West|||Hardware',
     ]);
+  });
+});
+
+describe('column header sort target', () => {
+  it('uses the collapsed parent column while the group is collapsed', () => {
+    const groupKey = makeColumnGroupId('Online');
+    const target = getColumnHeaderSortTarget(
+      groupKey,
+      false,
+      { fieldId: 'sales', aggFn: 'sum' }
+    );
+
+    expect(target).toBe('colGroup__Online');
+  });
+
+  it('uses the subtotal column while the group is expanded', () => {
+    const groupKey = makeColumnGroupId('Online');
+    const target = getColumnHeaderSortTarget(
+      groupKey,
+      true,
+      { fieldId: 'sales', aggFn: 'sum' }
+    );
+
+    expect(target).toBe(makeSubtotalColId('Online', 'sales', 'sum'));
+  });
+
+  it('cannot sort a header when no value field exists', () => {
+    expect(getColumnHeaderSortTarget('colGroup__Online', true, undefined)).toBeNull();
   });
 });

@@ -24,9 +24,21 @@ import {
 } from 'ag-grid-community';
 import { ColumnNode, PivotConfig, PivotRow, SaleRecord } from '../../types';
 import { PivotDataService, makeCellKey, makeRowTotalKey } from '../../services/pivot-data.service';
-import { preservePivotRowHierarchy, sortTopLevelColumnNodesByRow } from '../../services/pivot-sort';
+import {
+  getColumnHeaderSortTarget,
+  makeColumnGroupId,
+  makeSubtotalColId,
+  preservePivotRowHierarchy,
+  sortTopLevelColumnNodesByRow,
+} from '../../services/pivot-sort';
 import { ALL_FIELDS } from '../../data/sales-data';
-import { PivotExpandedGroupHeaderComponent, PivotCollapsedHeaderComponent } from './pivot-group-header.component';
+import {
+  PivotCollapsedHeaderComponent,
+  PivotCollapsedGroupHeaderComponent,
+  PivotEmptyHeaderComponent,
+  PivotExpandedGroupHeaderComponent,
+  PivotSortableHeaderComponent,
+} from './pivot-group-header.component';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -36,7 +48,14 @@ const FIELD_LABEL = new Map(ALL_FIELDS.map(f => [f.id, f.label]));
 @Component({
   selector: 'app-pivot-table',
   standalone: true,
-  imports: [AgGridAngular, PivotExpandedGroupHeaderComponent, PivotCollapsedHeaderComponent],
+  imports: [
+    AgGridAngular,
+    PivotExpandedGroupHeaderComponent,
+    PivotCollapsedHeaderComponent,
+    PivotCollapsedGroupHeaderComponent,
+    PivotEmptyHeaderComponent,
+    PivotSortableHeaderComponent,
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (config().valueFields.length === 0 || config().rowFields.length === 0) {
@@ -119,12 +138,16 @@ export class PivotTableComponent {
   expanded = signal<Record<string, boolean>>({});
   columnExpanded = signal<Set<string>>(new Set());
   columnSortByRow = signal<{ rowKeys: string; direction: 'asc' | 'desc' } | null>(null);
+  columnHeaderSort = signal<{ groupKey: string; direction: 'asc' | 'desc' } | null>(null);
 
   // カスタムヘッダーコンポーネントへ渡すコンテキスト
   gridContext = {
     toggleColExpand: (key: string) => this.toggleColExpand(key),
     isColExpanded: (key: string) => this.columnExpanded().has(key),
     isExpandable: (key: string) => this.pivotData().columnNodes.some(n => this.hasExpandableKey(n, key)),
+    toggleColumnHeaderSort: (key: string) => this.toggleColumnHeaderSort(key),
+    getColumnHeaderSort: (key: string) => this.getColumnHeaderSort(key),
+    clearColumnHeaderSort: () => this.clearColumnHeaderSort(),
   };
 
   private hasExpandableKey(node: ColumnNode, key: string): boolean {
@@ -179,6 +202,7 @@ export class PivotTableComponent {
         applyOrder: true,
       });
     }
+    this.applyColumnHeaderSortState();
 
     this.gridApi.refreshCells({ columns: ['__rowLabel'], force: true });
   });
@@ -221,7 +245,10 @@ export class PivotTableComponent {
 
     return [
       rowLabelCol,
-      ...this.buildColDefs(this.sortTopLevelColumnNodes(pd.columnNodes)),
+      ...this.buildColDefs(
+        this.sortTopLevelColumnNodes(pd.columnNodes),
+        this.hasAnyExpandedColumn(pd.columnNodes)
+      ),
       ...(cfg.columnFields.length > 0 ? [this.buildRowTotalDef()] : []),
     ];
   });
@@ -266,21 +293,25 @@ export class PivotTableComponent {
     </div>`;
   }
 
-  private buildColDefs(nodes: ColumnNode[]): (ColDef | ColGroupDef)[] {
+  private buildColDefs(nodes: ColumnNode[], alignCollapsedParentsToTop: boolean): (ColDef | ColGroupDef)[] {
     const cfg = this.config();
     return nodes.map(node => {
-      const groupId = `colGroup__${node.key}`;
+      const groupId = makeColumnGroupId(node.key);
       const hasChildren = node.children.length > 0;
       const isExpanded = hasChildren && this.columnExpanded().has(groupId);
 
       // 展開中: ColGroupDef + PivotExpandedGroupHeaderComponent + 子列 + Subtotal
       // 子列はソートしない: ソートは最上位ノード間のみ適用し親グループの依存を維持
       if (isExpanded) {
-        const subCols = this.buildColDefs(node.children);
+        const subCols = this.buildColDefs(node.children, alignCollapsedParentsToTop);
         if (cfg.valueFields.length === 1) {
           const vf = cfg.valueFields[0];
           subCols.push({
-            ...this.makeLeafColDef(`subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`, 'Subtotal'),
+            ...this.makeLeafColDef(
+              makeCellKey(node.key, vf.fieldId, vf.aggFn),
+              'Subtotal',
+              makeSubtotalColId(node.key, vf.fieldId, vf.aggFn)
+            ),
             cellStyle: (params): CellStyle => {
               if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
               return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#fffbeb', borderLeft: '1px solid #fde68a' };
@@ -291,7 +322,11 @@ export class PivotTableComponent {
             headerName: 'Subtotal',
             marryChildren: true,
             children: cfg.valueFields.map(vf => ({
-              ...this.makeLeafColDef(`subtotal__${node.key}__${vf.fieldId}__${vf.aggFn}`, this.aggLabel(vf)),
+              ...this.makeLeafColDef(
+                makeCellKey(node.key, vf.fieldId, vf.aggFn),
+                this.aggLabel(vf),
+                makeSubtotalColId(node.key, vf.fieldId, vf.aggFn)
+              ),
               cellStyle: (params): CellStyle => {
                 if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
                 return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#fffbeb' };
@@ -324,26 +359,59 @@ export class PivotTableComponent {
         } as ColGroupDef;
       }
 
-      // 子あり・折畳み: 単一 ColDef + PivotCollapsedHeaderComponent (余計な | を出さない)
+      // 子あり・折畳み: 上段に親ヘッダー、下段に空の実データ列を置く
       const vf = cfg.valueFields[0];
+      if (!alignCollapsedParentsToTop) {
+        return {
+          colId: groupId,
+          field: makeCellKey(node.key, vf.fieldId, vf.aggFn),
+          headerName: node.value,
+          headerComponent: PivotCollapsedHeaderComponent,
+          headerComponentParams: { groupKey: groupId },
+          width: 90,
+          resizable: true,
+          sortable: true,
+          type: 'numericColumn',
+          valueFormatter: (p) => this.formatCell(p.value),
+          cellStyle: (params): CellStyle => {
+            if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
+            if ((params.data as PivotRow)?.__isGroup) return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#f1f5f9', color: '#374151' };
+            return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#ffffff' };
+          },
+        } as ColDef;
+      }
       return {
-        colId: groupId,
-        field: makeCellKey(node.key, vf.fieldId, vf.aggFn),
+        groupId,
         headerName: node.value,
-        headerComponent: PivotCollapsedHeaderComponent,
-        headerComponentParams: { groupKey: groupId },
-        width: 90,
-        resizable: true,
-        sortable: true,
-        type: 'numericColumn',
-        valueFormatter: (p) => this.formatCell(p.value),
-        cellStyle: (params): CellStyle => {
-          if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
-          if ((params.data as PivotRow)?.__isGroup) return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#f1f5f9', color: '#374151' };
-          return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#ffffff' };
-        },
-      } as ColDef;
+        marryChildren: true,
+        headerGroupComponent: PivotCollapsedGroupHeaderComponent,
+        children: [{
+          colId: groupId,
+          field: makeCellKey(node.key, vf.fieldId, vf.aggFn),
+          headerName: '',
+          headerComponent: PivotEmptyHeaderComponent,
+          width: 90,
+          resizable: true,
+          sortable: true,
+          type: 'numericColumn',
+          valueFormatter: (p) => this.formatCell(p.value),
+          cellStyle: (params): CellStyle => {
+            if (params.node.rowPinned === 'bottom') return this.grandTotalCellStyle();
+            if ((params.data as PivotRow)?.__isGroup) return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#f1f5f9', color: '#374151' };
+            return { textAlign: 'right', fontVariantNumeric: 'tabular-nums', backgroundColor: '#ffffff' };
+          },
+        }],
+      } as ColGroupDef;
     });
+  }
+
+  private hasAnyExpandedColumn(nodes: ColumnNode[]): boolean {
+    const expanded = this.columnExpanded();
+    for (const node of nodes) {
+      if (node.children.length > 0 && expanded.has(makeColumnGroupId(node.key))) return true;
+      if (this.hasAnyExpandedColumn(node.children)) return true;
+    }
+    return false;
   }
 
   private buildRowTotalDef(): ColDef | ColGroupDef {
@@ -368,10 +436,12 @@ export class PivotTableComponent {
     } as ColGroupDef;
   }
 
-  private makeLeafColDef(field: string, headerName: string): ColDef {
+  private makeLeafColDef(field: string, headerName: string, colId?: string): ColDef {
     return {
+      colId,
       field,
       headerName,
+      headerComponent: PivotSortableHeaderComponent,
       width: 90,
       resizable: true,
       sortable: true,
@@ -426,6 +496,60 @@ export class PivotTableComponent {
       if (cur.direction === 'desc') return { rowKeys, direction: 'asc' };
       return null;
     });
+  }
+
+  private toggleColumnHeaderSort(groupKey: string): false | 'asc' | 'desc' {
+    let nextDirection: false | 'asc' | 'desc' = false;
+    this.columnHeaderSort.update(cur => {
+      if (!cur || cur.groupKey !== groupKey) {
+        nextDirection = 'desc';
+        return { groupKey, direction: nextDirection };
+      }
+      if (cur.direction === 'desc') {
+        nextDirection = 'asc';
+        return { groupKey, direction: nextDirection };
+      }
+      nextDirection = false;
+      return null;
+    });
+    this.applyColumnHeaderSortState();
+    this.gridApi?.refreshHeader();
+    return nextDirection;
+  }
+
+  private getColumnHeaderSort(groupKey: string): false | 'asc' | 'desc' {
+    const sort = this.columnHeaderSort();
+    return sort?.groupKey === groupKey ? sort.direction : false;
+  }
+
+  private clearColumnHeaderSort() {
+    if (!this.columnHeaderSort()) return;
+    this.columnHeaderSort.set(null);
+    this.gridApi?.refreshHeader();
+  }
+
+  private applyColumnHeaderSortState() {
+    if (!this.gridApi) return;
+    const sort = this.columnHeaderSort();
+    if (!sort) {
+      this.gridApi.applyColumnState({ defaultState: { sort: null } });
+      return;
+    }
+
+    const target = this.getColumnHeaderSortTarget(sort.groupKey);
+    if (!target) return;
+    this.gridApi.applyColumnState({
+      defaultState: { sort: null },
+      state: [{ colId: target, sort: sort.direction }],
+    });
+  }
+
+  private getColumnHeaderSortTarget(groupKey: string): string | null {
+    return getColumnHeaderSortTarget(
+      groupKey,
+      this.columnExpanded().has(groupKey),
+      this.config().valueFields[0]
+    );
   }
 
   // ColDef/ColGroupDef ツリーから leaf の colId を DFS 順で収集
