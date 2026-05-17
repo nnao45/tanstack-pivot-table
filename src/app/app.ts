@@ -14,8 +14,8 @@ const FIELD_LABEL = new Map(ALL_FIELDS.map(field => [field.id, field.label]));
   template: `
     <div class="flex flex-col h-screen bg-gray-50">
       <header class="bg-blue-700 text-white px-4 py-2.5 flex items-center gap-3 shadow-md flex-none">
-        <span class="text-lg font-bold tracking-tight">TanStack Pivot Table</span>
-        <span class="text-blue-300 text-xs">Angular + TanStack Table v8</span>
+        <span class="text-lg font-bold tracking-tight">Pivot Table</span>
+        <span class="text-blue-300 text-xs">Angular + AG Grid</span>
       </header>
 
       <main class="flex flex-1 overflow-hidden">
